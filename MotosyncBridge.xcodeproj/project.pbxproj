@@ -10,9 +10,24 @@
 		445B26AD2FD14B68001CACFA /* MotosyncBridge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MotosyncBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		445B26D82FD14C6A001CACFA /* Exceptions for "MotosyncBridge" folder in "MotosyncBridge" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				Presentation/Components/StatusBadge.swift,
+				Resources/Info.plist,
+			);
+			target = 445B26AC2FD14B68001CACFA /* MotosyncBridge */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		445B26AF2FD14B68001CACFA /* MotosyncBridge */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				445B26D82FD14C6A001CACFA /* Exceptions for "MotosyncBridge" folder in "MotosyncBridge" target */,
+			);
 			path = MotosyncBridge;
 			sourceTree = "<group>";
 		};
@@ -52,9 +67,9 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 445B26B82FD14B6A001CACFA /* Build configuration list for PBXNativeTarget "MotosyncBridge" */;
 			buildPhases = (
-				445B26A92FD14B68001CACFA /* Sources */,
 				445B26AA2FD14B68001CACFA /* Frameworks */,
 				445B26AB2FD14B68001CACFA /* Resources */,
+				445B271C2FD14EFE001CACFA /* Sources */,
 			);
 			buildRules = (
 			);
@@ -115,7 +130,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		445B26A92FD14B68001CACFA /* Sources */ = {
+		445B271C2FD14EFE001CACFA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -256,6 +271,7 @@
 				DEVELOPMENT_TEAM = PL846DUA6V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MotosyncBridge/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +304,7 @@
 				DEVELOPMENT_TEAM = PL846DUA6V;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MotosyncBridge/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

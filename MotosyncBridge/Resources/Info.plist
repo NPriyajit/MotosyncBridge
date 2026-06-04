@@ -1,0 +1,7 @@
+<key>UIBackgroundModes</key>
+<array>
+    <string>bluetooth-central</string>
+    <string>audio</string>
+</array>
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Motosync-Bridge requires continuous Bluetooth access to automatically stream active track information directly to your Honda dashboard console.</string>
