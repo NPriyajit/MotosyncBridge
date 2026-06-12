@@ -15,7 +15,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Presentation/Components/StatusBadge.swift,
 				Resources/Info.plist,
 			);
 			target = 445B26AC2FD14B68001CACFA /* MotosyncBridge */;

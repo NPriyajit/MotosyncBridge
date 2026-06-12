@@ -44,7 +44,7 @@ struct WaveBar: View {
             .frame(width: 6, height: height)
             .shadow(color: .red.opacity(0.4), radius: 4)
             .onAppear { animate() }
-            .onChange(of: isPlaying) { _ in animate() }
+            .onChange(of: isPlaying) { animate() }
     }
 
     private func animate() {
@@ -66,6 +66,8 @@ struct WaveBar: View {
 struct DashboardView: View {
     @EnvironmentObject var ble: BluetoothManager
     @EnvironmentObject var media: MediaObserver
+
+    @FocusState private var isFocused: Bool
 
     @State private var appear = false
     @State private var trackAppear = false
@@ -95,12 +97,35 @@ struct DashboardView: View {
                 Spacer()
                 trackSection
                 Spacer()
+                controlModeDisplay
+                Spacer()
                 statusBar
                     .padding(.bottom, 32)
             }
             .padding(.horizontal, 28)
         }
+        .focusable()             // <--- ADD THIS
+        .focused($isFocused)
+        .onKeyPress { press in
+            print("⌨️ HONDA HOGP BUTTON PRESSED: \(press.key)")
+            
+            switch press.key {
+            case .leftArrow:
+                SystemMediaController.shared.previousTrack()
+                return .handled
+            case .rightArrow:
+                SystemMediaController.shared.nextTrack()
+                return .handled
+            case .upArrow, .downArrow, .return:
+                // Honda usually uses 'Up' or 'Center/Return' for Play/Pause
+                SystemMediaController.shared.togglePlayPause()
+                return .handled
+            default:
+                return .ignored
+            }
+        }
         .onAppear {
+            isFocused = true
             withAnimation(.easeOut(duration: 0.7)) { appear = true }
             withAnimation(.easeOut(duration: 0.6).delay(0.3)) { trackAppear = true }
             
@@ -112,6 +137,24 @@ struct DashboardView: View {
             }
             media.fetchCurrentMedia()
         }
+    }
+
+    // MARK: - Control Mode
+    private var controlModeDisplay: some View {
+        HStack(spacing: 6) {
+            Image(systemName: AppConfiguration.mediaControlMode == .systemWide ? "sparkles" : "music.note")
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.4))
+            
+            Text(AppConfiguration.mediaControlMode.rawValue.uppercased())
+                .font(.system(size: 10, weight: .black, design: .rounded))
+                .foregroundColor(.white.opacity(0.4))
+                .tracking(1.5)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(Color.white.opacity(0.04)))
+        .opacity(appear ? 1 : 0)
     }
 
     // MARK: - Header

@@ -42,6 +42,16 @@ final class DashboardViewModel: ObservableObject {
                 self?.bluetoothManager.sendMetadata(track: title, artist: artist)
             }
         }
+
+        bluetoothManager.$handshakeState
+            .sink { [weak self] state in
+                if case .verified = state {
+                    if let title = self?.trackTitle, let artist = self?.trackArtist {
+                        self?.bluetoothManager.sendMetadata(track: title, artist: artist)
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func startEngine() {

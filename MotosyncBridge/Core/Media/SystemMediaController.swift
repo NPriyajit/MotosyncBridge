@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import MediaPlayer
 
 final class SystemMediaController {
     static let shared = SystemMediaController()
@@ -29,17 +30,50 @@ final class SystemMediaController {
     }
 
     func togglePlayPause() {
-        _ = sendCommand?(MRCommandTogglePlayPause, nil)
-        print("⏯️ System Play/Pause Triggered")
+        if AppConfiguration.mediaControlMode == .systemWide {
+            if let sendCommand = sendCommand {
+                let success = sendCommand(MRCommandTogglePlayPause, nil)
+                print("⏯️ MediaRemote Play/Pause Triggered (success: \(success))")
+            } else {
+                print("⚠️ MediaRemote not loaded or unavailable. Cannot send command.")
+            }
+        } else {
+            let player = MPMusicPlayerController.systemMusicPlayer
+            if player.playbackState == .playing {
+                player.pause()
+                print("⏯️ Apple Music Paused")
+            } else {
+                player.play()
+                print("⏯️ Apple Music Playing")
+            }
+        }
     }
 
     func nextTrack() {
-        _ = sendCommand?(MRCommandNextTrack, nil)
-        print("⏭️ System Next Track Triggered")
+        if AppConfiguration.mediaControlMode == .systemWide {
+            if let sendCommand = sendCommand {
+                let success = sendCommand(MRCommandNextTrack, nil)
+                print("⏭️ MediaRemote Next Track Triggered (success: \(success))")
+            } else {
+                print("⚠️ MediaRemote not loaded or unavailable. Cannot send command.")
+            }
+        } else {
+            MPMusicPlayerController.systemMusicPlayer.skipToNextItem()
+            print("⏭️ Apple Music Skip to Next Item")
+        }
     }
 
     func previousTrack() {
-        _ = sendCommand?(MRCommandPreviousTrack, nil)
-        print("⏮️ System Previous Track Triggered")
+        if AppConfiguration.mediaControlMode == .systemWide {
+            if let sendCommand = sendCommand {
+                let success = sendCommand(MRCommandPreviousTrack, nil)
+                print("⏮️ MediaRemote Previous Track Triggered (success: \(success))")
+            } else {
+                print("⚠️ MediaRemote not loaded or unavailable. Cannot send command.")
+            }
+        } else {
+            MPMusicPlayerController.systemMusicPlayer.skipToPreviousItem()
+            print("⏮️ Apple Music Skip to Previous Item")
+        }
     }
 }
