@@ -37,21 +37,20 @@ final class DashboardViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .assign(to: &$trackArtist)
 
+        // Keep the BT manager's local cache current so it has the right track
+        // available the moment succeedHandshake() fires (before Combine delivers).
         mediaObserver.onMetadataChanged = { [weak self] title, artist in
+            guard let self else { return }
+            // 1. Cache in BT manager (used by succeedHandshake for initial push)
+            self.bluetoothManager.updateKnownMetadata(track: title, artist: artist)
+            // 2. Push to display
             Task { @MainActor in
-                self?.bluetoothManager.sendMetadata(track: title, artist: artist)
+                self.bluetoothManager.sendMetadata(track: title, artist: artist)
             }
         }
-
-        bluetoothManager.$handshakeState
-            .sink { [weak self] state in
-                if case .verified = state {
-                    if let title = self?.trackTitle, let artist = self?.trackArtist {
-                        self?.bluetoothManager.sendMetadata(track: title, artist: artist)
-                    }
-                }
-            }
-            .store(in: &cancellables)
+        // Note: Initial push after handshake is handled directly in
+        // BluetoothManager.succeedHandshake() using lastKnownTrack/lastKnownArtist,
+        // avoiding the deferred @MainActor delivery that caused the timing bug.
     }
 
     func startEngine() {

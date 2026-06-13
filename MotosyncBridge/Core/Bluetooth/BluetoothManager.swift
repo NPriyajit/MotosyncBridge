@@ -1,7 +1,8 @@
 // BluetoothManager.swift — Motosync Bridge
-// Payload format reverse-engineered from BleHardwareLink.ts:
-//   MusicEncoder.generateDisplayPacket() → 141-byte fixed packet
-//   Heartbeat → single 0x01 byte, not "PING"
+// Payload format reverse-engineered from Android BLE decompilation:
+//   REQUEST_SAB_MODE  → [0x0A, requestId]          2 bytes
+//   MYSTERY_BOX       → LiveScreen serialization    variable
+//   POP_UP heartbeat  → [0x02, requestId, 0, 0, 0]  5 bytes
 
 import Foundation
 import CoreBluetooth
@@ -64,10 +65,12 @@ private enum MusicEncoder {
         // 9. Content Background Color: PURE_BLACK (1)
         packet.append(1)
         
-        // 10. Content Icon ID: MUSIC (3)
-        packet.append(3)
-        // 11. Content Icon Tint Color: PURE_WHITE (0)
+        // 10. Content Icon ID: IC_NONE (0) — no icon; text fills the content area.
+        // Note: MUSIC icon value (3) conflicts with MENU_ARROW_UP (also 3) in the
+        // console's icon validation table. IC_NONE is always accepted and avoids
+        // the INVALID_PARAMETERS rejection at byte position 0x0F.
         packet.append(0)
+        // IC_NONE has no tint color (CommandKt.c skips null → nothing written)
         
         // 12. Content Text Line 1 (Title)
         let cleanTitle = String(title.prefix(30))
@@ -88,6 +91,12 @@ private enum MusicEncoder {
         }
         
         return packet
+    }
+
+    // 2-byte REQUEST_SAB_MODE packet — must be sent once before any display projection.
+    // Equivalent to CommandBuilder.i() in Android: [0x0A, requestId]
+    static func generateSABModeRequest(requestId: UInt8) -> Data {
+        return Data([0x0A, requestId])
     }
 
     // Dynamic 5-byte keep-alive matching POP_UP layout with zeroed fields.
@@ -204,12 +213,24 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
             } else if char.uuid == AppConfiguration.displayCharUUID {
                 print("🔥 Assigned TX Characteristic!")
                 m.txCharacteristic = char
+            } else if char.uuid == AppConfiguration.assignmentControlUUID {
+                m.assignmentControlChar = char
+            } else if char.uuid == AppConfiguration.buttonCharUUID {
+                m.functionSourceChar = char
             }
             
-            // 2. Automatically subscribe to RX (Notify/Indicate) for bike button events
-            if char.properties.contains(.notify) || char.properties.contains(.indicate) {
-                print("    📡 Subscribing to RX Notifications on characteristic: \(char.uuid)")
-                peripheral.setNotifyValue(true, for: char)
+            // 2. Limit notification subscriptions to ONLY critical channels to prevent flooding
+            let notifyUUIDs: Set<CBUUID> = [
+                AppConfiguration.buttonCharUUID,
+                AppConfiguration.assignmentControlUUID,
+                AppConfiguration.displayCharUUID,
+                CBUUID(string: "2A19") // Battery Level
+            ]
+            if notifyUUIDs.contains(char.uuid) {
+                if char.properties.contains(.notify) || char.properties.contains(.indicate) {
+                    print("    📡 Subscribing to RX Notifications on characteristic: \(char.uuid)")
+                    peripheral.setNotifyValue(true, for: char)
+                }
             }
         }
         
@@ -260,6 +281,12 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
         // Handle Security Data Source read response
         if characteristic.uuid == AppConfiguration.securityDataSourceUUID {
             m.handleSecurityDataSourceRead(data: data)
+            return
+        }
+        
+        // Handle Assignment Control notification receipt
+        if characteristic.uuid == AppConfiguration.assignmentControlUUID {
+            m.handleAssignmentControlNotification(data: data)
             return
         }
         
@@ -322,6 +349,7 @@ enum HandshakeState {
     case readingStatus
     case exchangingKeys(keyPair: RSAKeyPair)
     case validating(key: Data)
+    case assigning
     case verified(key: Data)
     case failed(String)
 }
@@ -341,6 +369,12 @@ final class BluetoothManager: ObservableObject {
     fileprivate var securityStatusChar: CBCharacteristic?
     fileprivate var securityControlPointChar: CBCharacteristic?
     fileprivate var securityDataSourceChar: CBCharacteristic?
+    fileprivate var assignmentControlChar: CBCharacteristic?
+    fileprivate var functionSourceChar: CBCharacteristic?
+
+    private var savedAESKey: Data?
+    private var pendingAssignments: [Data] = []
+    private var currentAssignment: Data?
 
     private let  bleDelegate: BLEDelegate
     private var  centralManager: CBCentralManager!
@@ -375,7 +409,30 @@ final class BluetoothManager: ObservableObject {
         return id
     }
 
-    // Sends dynamic LiveScreen projection packet
+    // Latest track/artist as reported by MediaObserver.
+    // Updated by DashboardViewModel so succeedHandshake can push immediately.
+    private(set) var lastKnownTrack:  String = "No Media Playing"
+    private(set) var lastKnownArtist: String = "Unknown Artist"
+
+    func updateKnownMetadata(track: String, artist: String) {
+        lastKnownTrack  = track
+        lastKnownArtist = artist
+    }
+
+    // Sends REQUEST_SAB_MODE (0x0A) to switch console into SAB display mode.
+    // Must be called once after handshake before any MYSTERY_BOX projection.
+    func sendSABModeRequest() {
+        guard let peripheral = connectedPeripheral,
+              let txChar = txCharacteristic else { return }
+        guard case .verified = handshakeState else { return }
+        let rid = nextRequestId()
+        let packet = MusicEncoder.generateSABModeRequest(requestId: rid)
+        let hex = packet.map { String(format: "%02x", $0) }
+        print("🏍️ → SAB MODE REQUEST [\(rid)]: \(hex)")
+        peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
+    }
+
+    // Sends dynamic LiveScreen projection packet (MYSTERY_BOX / 0x01).
     func sendMetadata(track: String, artist: String) {
         guard let peripheral = connectedPeripheral,
               let txChar = txCharacteristic else { return }
@@ -386,6 +443,8 @@ final class BluetoothManager: ObservableObject {
         }
         let rid = nextRequestId()
         let packet = MusicEncoder.generateDisplayPacket(requestId: rid, title: track, artist: artist)
+        let hex = packet.map { String(format: "%02x", $0) }
+        print("🎵 → MYSTERY_BOX [rid=\(rid), \(packet.count)B]: \(hex)")
         peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
     }
 
@@ -416,6 +475,11 @@ final class BluetoothManager: ObservableObject {
         securityStatusChar = nil
         securityControlPointChar = nil
         securityDataSourceChar = nil
+        assignmentControlChar = nil
+        functionSourceChar = nil
+        savedAESKey = nil
+        pendingAssignments.removeAll()
+        currentAssignment = nil
     }
 
     // MARK: — Handshake Flow
@@ -444,6 +508,7 @@ final class BluetoothManager: ObservableObject {
         if isSecured {
             if let key = savedKey {
                 print("🔒 Saved AES key found. Validating connection...")
+                savedAESKey = key
                 performKeyValidation(key: key)
             } else {
                 print("⚠️ Bike reports secured, but no key is saved locally. Forcing Secure Exchange...")
@@ -579,16 +644,192 @@ final class BluetoothManager: ObservableObject {
             let savedKeyKey = "AES_SESSION_KEY_\(connectedPeripheral?.identifier.uuidString ?? "")"
             UserDefaults.standard.set(key, forKey: savedKeyKey)
 
-            succeedHandshake(key: key)
+            savedAESKey = key
+            startAssignments()
         } else {
             failHandshake(reason: "GATT Key validation status error byte: \(status)")
         }
     }
 
-    private func succeedHandshake(key: Data) {
+    // MARK: - Button & Color Assignments
+    
+    private func buildAssignments() -> [Data] {
+        var list: [Data] = []
+        var counter: UInt16 = 0
+        
+        func nextRid() -> (UInt8, UInt8) {
+            counter += 1
+            return (UInt8(counter & 0xFF), UInt8((counter >> 8) & 0xFF))
+        }
+        
+        // 1. VOLUME_UP
+        let (r1L, r1H) = nextRid()
+        list.append(Data([1, r1L, r1H, 5, 1, 7, 0x80, 0]))
+        
+        // 2. VOLUME_DOWN
+        let (r2L, r2H) = nextRid()
+        list.append(Data([1, r2L, r2H, 6, 1, 7, 0x81, 0]))
+        
+        // 3. PREVIOUS
+        let (r3L, r3H) = nextRid()
+        list.append(Data([1, r3L, r3H, 1, 2]))
+        
+        // 4. NEXT
+        let (r4L, r4H) = nextRid()
+        list.append(Data([1, r4L, r4H, 2, 2]))
+        
+        // 5. BACK
+        let (r5L, r5H) = nextRid()
+        list.append(Data([1, r5L, r5H, 3, 2]))
+        
+        // 6. SELECT
+        let (r6L, r6H) = nextRid()
+        list.append(Data([1, r6L, r6H, 4, 2]))
+        
+        // 7. VOLUME_MUTE
+        let (r7L, r7H) = nextRid()
+        list.append(Data([1, r7L, r7H, 7, 2]))
+        
+        // 8. MENU
+        let (r8L, r8H) = nextRid()
+        list.append(Data([1, r8L, r8H, 8, 2]))
+        
+        // 9. MODE_SAB
+        let (r9L, r9H) = nextRid()
+        list.append(Data([1, r9L, r9H, 9, 2]))
+        
+        // 10. MODE_HU
+        let (r10L, r10H) = nextRid()
+        list.append(Data([1, r10L, r10H, 10, 2]))
+        
+        // Register the 17 custom colors to ensure custom colors (like Orange 14) are registered
+        let colors: [(UInt8, [UInt8])] = [
+            (2, [0xD6, 0x47, 0x47]), // NEGATIVE
+            (3, [0x38, 0xA8, 0x43]), // POSITIVE
+            (4, [0x30, 0x9A, 0x87]), // GREEN_LIGHT
+            (5, [0x24, 0x73, 0x65]), // GREEN
+            (6, [0x0B, 0x27, 0x22]), // GREEN_DARK
+            (7, [0x78, 0x46, 0xA3]), // PURPLE_LIGHT
+            (8, [0x57, 0x32, 0x7A]), // PURPLE
+            (9, [0x27, 0x16, 0x37]), // PURPLE_DARK
+            (10, [0x45, 0x7A, 0xB1]), // BLUE_LIGHT
+            (11, [0x34, 0x5C, 0x86]), // BLUE
+            (12, [0x12, 0x1F, 0x2C]), // BLUE_DARK
+            (13, [0xD8, 0x84, 0x2B]), // ORANGE_LIGHT
+            (14, [0xAA, 0x69, 0x27]), // ORANGE
+            (15, [0x4C, 0x28, 0x0A]), // ORANGE_DARK
+            (16, [0x71, 0x71, 0x71]), // GREY_LIGHT
+            (17, [0x4B, 0x4B, 0x4B]), // GREY
+            (18, [0x27, 0x27, 0x27])  // GREY_DARK
+        ]
+        
+        for (colorId, rgb) in colors {
+            let (cL, cH) = nextRid()
+            list.append(Data([2, cL, cH, colorId, rgb[0], rgb[1], rgb[2]]))
+        }
+        
+        return list
+    }
+    
+    fileprivate func startAssignments() {
+        handshakeState = .assigning
+        pendingAssignments = buildAssignments()
+        sendNextAssignment()
+    }
+    
+    private func sendNextAssignment() {
+        guard let peripheral = connectedPeripheral,
+              let char = assignmentControlChar else {
+            failHandshake(reason: "Assignment Control characteristic missing")
+            return
+        }
+        
+        if pendingAssignments.isEmpty {
+            print("🔒 All assignments registered successfully! Sending END_ASSIGNMENT...")
+            sendEndAssignment()
+            return
+        }
+        
+        let assignment = pendingAssignments.removeFirst()
+        currentAssignment = assignment
+        
+        let hex = assignment.map { String(format: "%02x", $0) }
+        print("🔒 Sending Assignment: \(hex)")
+        
+        peripheral.writeValue(assignment, for: char, type: .withoutResponse)
+        
+        // Timeout retry mechanism in case response not received (2 seconds)
+        let savedAssignment = assignment
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self else { return }
+            if self.currentAssignment == savedAssignment {
+                print("⚠️ Assignment confirmation timeout for \(hex). Retrying...")
+                self.pendingAssignments.insert(savedAssignment, at: 0)
+                self.sendNextAssignment()
+            }
+        }
+    }
+    
+    fileprivate func handleAssignmentControlNotification(data: Data) {
+        guard case .assigning = handshakeState,
+              let current = currentAssignment else { return }
+        
+        let hex = data.map { String(format: "%02x", $0) }
+        print("🔒 Assignment notification receipt: \(hex)")
+        
+        guard data.count >= 4 else { return }
+        
+        let commandId = data[0]
+        let ridLow = data[1]
+        let ridHigh = data[2]
+        let status = data[3]
+        
+        if current[0] == commandId && current[1] == ridLow && current[2] == ridHigh {
+            if status == 1 || status == 13 {
+                // Success or already registered
+                currentAssignment = nil
+                sendNextAssignment()
+            } else {
+                failHandshake(reason: "Assignment failed with status: \(status)")
+            }
+        }
+    }
+    
+    private func sendEndAssignment() {
+        guard let peripheral = connectedPeripheral,
+              let char = assignmentControlChar else {
+            failHandshake(reason: "Assignment Control characteristic missing")
+            return
+        }
+        
+        let packet = Data([3])
+        peripheral.writeValue(packet, for: char, type: .withoutResponse)
+        
+        print("🔒 END_ASSIGNMENT sent. Transitioning to secured state.")
+        succeedSecuredState()
+    }
+    
+    private func succeedSecuredState() {
+        guard case .assigning = handshakeState,
+              let key = savedAESKey else {
+            failHandshake(reason: "Missing AES Session key in succeedSecuredState")
+            return
+        }
+        
         handshakeState = .verified(key: key)
-        print("🎉 Honda BTU Security validation complete! Connection is now SECURED.")
+        print("🎉 Honda BTU Security & Assignments complete! Connection is SECURED.")
+        
+        // Step 1: Tell console to enter SAB display mode before sending any projection.
+        sendSABModeRequest()
+
+        // Step 2: Start keep-alive heartbeat (POP_UP, every 2s).
         startHeartbeat()
+
+        // Step 3: Push current track info immediately
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sendMetadata(track: self.lastKnownTrack, artist: self.lastKnownArtist)
+        }
     }
 
     fileprivate func failHandshake(reason: String) {

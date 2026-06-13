@@ -16,7 +16,8 @@ enum AppConfiguration {
     // Display/Data Service (DataCommunicationService)
     static let displayServiceUUID = CBUUID(string: "8536e103-6771-4d4b-9702-287cb5e1340f")
     static let displayCharUUID = CBUUID(string: "d2e23443-f1ad-4293-a70b-a9fd163f7b00") // Display control point
-    static let buttonCharUUID = CBUUID(string: "2573cb1a-7a02-45cd-957e-ebe6ab066539")
+    static let buttonCharUUID = CBUUID(string: "6C060578-D1D9-460A-B86F-EB97F01B2227")
+    static let assignmentControlUUID = CBUUID(string: "4F5FBE6B-474B-4820-833F-95BFBF525D9F")
     
     // Security Service
     static let securityServiceUUID = CBUUID(string: "592c1017-9c7b-4a35-aba6-f268592fb8fc")
