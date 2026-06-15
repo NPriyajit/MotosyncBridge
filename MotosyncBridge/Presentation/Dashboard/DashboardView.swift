@@ -71,8 +71,6 @@ struct DashboardView: View {
     @StateObject private var nav = NavigationManager.shared
     @StateObject private var call = CallManager.shared
     @StateObject private var msg = MessageManager.shared
-    @State private var callerSimName = "John Doe"
-    @State private var callerSimNumber = "+1 (555) 0199"
 
     @FocusState private var isFocused: Bool
 
@@ -100,6 +98,11 @@ struct DashboardView: View {
         hasPassedInitialThreeSeconds && ble.status != .connected
     }
 
+    /// True only when MediaObserver has captured real track data (not the defaults).
+    var hasRealMedia: Bool {
+        media.currentTrack != "No Media Playing" || media.currentArtist != "Unknown Artist"
+    }
+
     var body: some View {
         ZStack {
             // Deep automotive dark background
@@ -115,6 +118,9 @@ struct DashboardView: View {
 
             VStack(spacing: 0) {
                 headerBar
+                
+                indicatorRow
+                    .padding(.top, 12)
                 
                 // Sliding Segmented Tab Control
                 tabPicker
@@ -261,87 +267,146 @@ struct DashboardView: View {
             Spacer()
             trackSection
             Spacer()
-            controlModeDisplay
+            if call.isIncomingCallActive || call.isCallActive || msg.hasUnreadPriorityMessages {
+                actionButtonsView
+            } else if hasRealMedia || media.isPlaying {
+                mediaControls
+            } else {
+                controlModeDisplay
+            }
+            Spacer()
         }
     }
 
-    private var simulatorCard: some View {
-        VStack(spacing: 12) {
-            // Call simulation controls
-            HStack(spacing: 8) {
-                if !call.isIncomingCallActive && !call.isCallActive {
-                    Button(action: {
-                        call.simulateIncomingCall(name: callerSimName, number: callerSimNumber)
-                    }) {
-                        Text("SIM INCOMING")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.orange)
-                            .cornerRadius(6)
+    private var actionButtonsView: some View {
+        HStack(spacing: 20) {
+            if call.isIncomingCallActive {
+                Button(action: {
+                    _ = CallManager.shared.disconnectCall()
+                }) {
+                    HStack {
+                        Image(systemName: "phone.down.fill")
+                        Text("DECLINE")
                     }
-                } else if call.isIncomingCallActive {
-                    Button(action: {
-                        call.simulateAnswer()
-                    }) {
-                        Text("SIM ANSWER")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.green)
-                            .cornerRadius(6)
-                    }
-                    Button(action: {
-                        call.simulateEnd()
-                    }) {
-                        Text("SIM DECLINE")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.red)
-                            .cornerRadius(6)
-                    }
-                } else {
-                    Button(action: {
-                        call.simulateEnd()
-                    }) {
-                        Text("SIM END CALL")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.red)
-                            .cornerRadius(6)
-                    }
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.85)))
+                    .shadow(color: Color.red.opacity(0.3), radius: 6)
                 }
                 
-                Spacer()
-                
-                // Message simulation controls
                 Button(action: {
-                    if msg.hasUnreadPriorityMessages {
-                        msg.clearMessages()
-                    } else {
-                        msg.simulateNewMessage()
-                    }
+                    _ = CallManager.shared.answerCall()
                 }) {
-                    Text(msg.hasUnreadPriorityMessages ? "CLEAR MSG" : "SIM MESSAGE")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(msg.hasUnreadPriorityMessages ? .white : .black)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(msg.hasUnreadPriorityMessages ? Color.red.opacity(0.8) : Color.yellow)
-                        .cornerRadius(6)
+                    HStack {
+                        Image(systemName: "phone.fill")
+                        Text("ANSWER")
+                    }
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.2, green: 0.9, blue: 0.5)))
+                    .shadow(color: Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.3), radius: 8)
+                }
+            } else if call.isCallActive {
+                Button(action: {
+                    _ = CallManager.shared.disconnectCall()
+                }) {
+                    HStack {
+                        Image(systemName: "phone.down.fill")
+                        Text("END CALL")
+                    }
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.85)))
+                    .shadow(color: Color.red.opacity(0.3), radius: 6)
+                }
+            } else if msg.hasUnreadPriorityMessages {
+                Button(action: {
+                    msg.clearMessages()
+                }) {
+                    HStack {
+                        Image(systemName: "xmark.circle")
+                        Text("DISMISS")
+                    }
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
                 }
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
-        .padding(.horizontal, 4)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: call.isIncomingCallActive)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: call.isCallActive)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: msg.hasUnreadPriorityMessages)
+    }
+
+    private var indicatorRow: some View {
+        HStack(spacing: 20) {
+            // 1. Bluetooth Icon
+            indicatorIcon(
+                systemName: ble.status == .connected ? "wave.3.right.circle.fill" : "wave.3.right.circle",
+                isActive: ble.status == .connected,
+                activeColor: Color(red: 0.2, green: 0.6, blue: 1.0)
+            )
+            
+            // 2. Navigation Icon
+            indicatorIcon(
+                systemName: "location.circle.fill",
+                isActive: nav.isNavigating || ble.isNavigationActive,
+                activeColor: Color(red: 0.2, green: 0.9, blue: 0.5)
+            )
+            
+            // 3. Call Icon
+            indicatorIcon(
+                systemName: call.isIncomingCallActive ? "phone.badge.plus.fill" : "phone.circle.fill",
+                isActive: call.isIncomingCallActive || call.isCallActive,
+                activeColor: Color.orange
+            )
+            
+            // 4. Music Icon
+            indicatorIcon(
+                systemName: "music.note",
+                isActive: media.isPlaying,
+                activeColor: Color.pink
+            )
+            
+            // 5. Message Icon
+            indicatorIcon(
+                systemName: "message.circle.fill",
+                isActive: msg.hasUnreadPriorityMessages,
+                activeColor: Color.yellow
+            )
+            
+            // 6. Service Warning Icon
+            indicatorIcon(
+                systemName: "exclamationmark.triangle.fill",
+                isActive: ble.status == .disconnected,
+                activeColor: Color.red
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.02)))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.04), lineWidth: 1))
+        .opacity(appear ? 1 : 0)
+    }
+
+    private func indicatorIcon(systemName: String, isActive: Bool, activeColor: Color) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundColor(isActive ? activeColor : Color.white.opacity(0.12))
+            .shadow(color: isActive ? activeColor.opacity(0.4) : .clear, radius: isActive ? 6 : 0)
+            .scaleEffect(isActive ? 1.1 : 1.0)
+            .animation(.spring(response: 0.35, dampingFraction: 0.6), value: isActive)
+            .frame(maxWidth: .infinity)
     }
 
     private var settingsView: some View {
@@ -415,15 +480,8 @@ struct DashboardView: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
                 }
                 
-                // Cluster simulator debug card
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("CLUSTER HARDWARE SIMULATOR")
-                        .font(.system(size: 9, weight: .black))
-                        .foregroundColor(.white.opacity(0.3))
-                        .tracking(1.5)
-                    
-                    simulatorCard
-                }
+                // End of Settings Options
+                Spacer(minLength: 10)
             }
             .padding(.horizontal, 4)
             .padding(.bottom, 24)
@@ -754,6 +812,53 @@ struct DashboardView: View {
         .opacity(appear ? 1 : 0)
     }
 
+    // MARK: - Media Transport Controls
+    private var mediaControls: some View {
+        HStack(spacing: 0) {
+            Button(action: {
+                SystemMediaController.shared.previousTrack()
+            }) {
+                Image(systemName: "backward.fill")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+                    .frame(width: 56, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            
+            Button(action: {
+                SystemMediaController.shared.togglePlayPause()
+            }) {
+                Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 64, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            
+            Button(action: {
+                SystemMediaController.shared.nextTrack()
+            }) {
+                Image(systemName: "forward.fill")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+                    .frame(width: 56, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.04))
+                .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 1))
+        )
+        .opacity(appear ? 1 : 0)
+        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+    }
+
     // MARK: - Header
     private var headerBar: some View {
         HStack {
@@ -805,7 +910,21 @@ struct DashboardView: View {
                 )
 
             VStack(spacing: 20) {
-                if media.isPlaying {
+                if call.isIncomingCallActive || call.isCallActive {
+                    Image(systemName: call.isIncomingCallActive ? "phone.badge.plus.fill" : "phone.fill")
+                        .font(.system(size: 54, weight: .light))
+                        .foregroundColor(call.isIncomingCallActive ? .orange : Color(red: 0.2, green: 0.9, blue: 0.5))
+                        .shadow(color: (call.isIncomingCallActive ? Color.orange : Color.green).opacity(0.6), radius: 15)
+                        .scaleEffect(call.isIncomingCallActive ? 1.15 : 1.0)
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: call.isIncomingCallActive)
+                } else if msg.hasUnreadPriorityMessages {
+                    Image(systemName: "message.circle.fill")
+                        .font(.system(size: 54, weight: .light))
+                        .foregroundColor(.yellow)
+                        .shadow(color: Color.yellow.opacity(0.6), radius: 15)
+                        .scaleEffect(1.05)
+                        .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: msg.hasUnreadPriorityMessages)
+                } else if media.isPlaying {
                     HStack(alignment: .center, spacing: 6) {
                         ForEach([0.0, 0.15, 0.3, 0.1, 0.25], id: \.self) { d in
                             WaveBar(delay: d, isPlaying: media.isPlaying)
@@ -819,11 +938,20 @@ struct DashboardView: View {
                         .transition(.scale.combined(with: .opacity))
                 }
 
-                Text("BTU TX")
+                Text(call.isIncomingCallActive ? "INCOMING CALL" : (call.isCallActive ? "ACTIVE CALL" : (msg.hasUnreadPriorityMessages ? "NEW MESSAGE" : "BTU TX")))
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(statusColor(ble.status).opacity(0.7))
+                    .foregroundColor(
+                        call.isIncomingCallActive ? .orange :
+                        (call.isCallActive ? Color(red: 0.2, green: 0.9, blue: 0.5) :
+                        (msg.hasUnreadPriorityMessages ? .yellow : statusColor(ble.status).opacity(0.7)))
+                    )
                     .tracking(4)
             }
+        }
+        .contentShape(Circle())
+        .onTapGesture {
+            // Tap the central hub to toggle play/pause
+            SystemMediaController.shared.togglePlayPause()
         }
         .opacity(appear ? 1 : 0)
         .scaleEffect(appear ? 1 : 0.85)
@@ -833,25 +961,56 @@ struct DashboardView: View {
     // MARK: - Track Info
     private var trackSection: some View {
         VStack(spacing: 12) {
-            Text(media.currentTrack)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .id(trackKey)
-                .transition(.asymmetric(
-                    insertion: .offset(y: 15).combined(with: .opacity),
-                    removal:   .offset(y: -15).combined(with: .opacity)
-                ))
+            if call.isIncomingCallActive || call.isCallActive {
+                Text(call.callerName ?? (call.isIncomingCallActive ? "Incoming Call" : "Active Call"))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .transition(.opacity)
 
-            Text(media.currentArtist)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(.white.opacity(0.5))
-                .id(trackKey)
-                .transition(.asymmetric(
-                    insertion: .offset(y: 10).combined(with: .opacity),
-                    removal:   .offset(y: -10).combined(with: .opacity)
-                ))
+                Text(call.callerNumber ?? "Unknown Details")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .transition(.opacity)
+            } else if msg.hasUnreadPriorityMessages {
+                Text(msg.lastMessageSender ?? "Priority Message")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .transition(.opacity)
+
+                Text("From \(msg.lastMessageApp ?? "Notification")")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .transition(.opacity)
+            } else if hasRealMedia {
+                Text(media.currentTrack)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .id(trackKey)
+                    .transition(.asymmetric(
+                        insertion: .offset(y: 15).combined(with: .opacity),
+                        removal:   .offset(y: -15).combined(with: .opacity)
+                    ))
+
+                Text(media.currentArtist)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .id(trackKey)
+                    .transition(.asymmetric(
+                        insertion: .offset(y: 10).combined(with: .opacity),
+                        removal:   .offset(y: -10).combined(with: .opacity)
+                    ))
+            } else {
+                Text("AWAITING MEDIA")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.2))
+                    .tracking(3)
+            }
         }
         .frame(height: 80)
         .opacity(trackAppear ? 1 : 0)

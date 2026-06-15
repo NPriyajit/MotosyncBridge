@@ -13,6 +13,7 @@ final class MediaObserver: ObservableObject {
     @Published var currentTrack: String  = "No Media Playing"
     @Published var currentArtist: String = "Unknown Artist"
     @Published var isPlaying: Bool = false
+    @Published var nowPlayingApp: String = ""
 
     var onMetadataChanged: ((String, String) -> Void)?
     private var pollTimer: Timer?
@@ -21,6 +22,9 @@ final class MediaObserver: ObservableObject {
     // Dynamic C-linkage pointers for the Private MediaRemote framework
     private typealias MRMediaRemoteGetNowPlayingInfoType = @convention(c) (DispatchQueue, @escaping (CFDictionary) -> Void) -> Void
     private var MRMediaRemoteGetNowPlayingInfo: MRMediaRemoteGetNowPlayingInfoType?
+    
+    private typealias MRGetNowPlayingAppBundleIDType = @convention(c) (DispatchQueue, @escaping (CFString) -> Void) -> Void
+    private var MRMediaRemoteGetNowPlayingApplicationBundleIdentifier: MRGetNowPlayingAppBundleIDType?
 
     init() {
         requestMediaLibraryAuthorization()
@@ -56,9 +60,11 @@ final class MediaObserver: ObservableObject {
         // Dynamically open the private system framework to slip past compiler blocks
         let handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_NOW)
         if let handle = handle {
-            let sym = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo")
-            if let sym = sym {
+            if let sym = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo") {
                 MRMediaRemoteGetNowPlayingInfo = unsafeBitCast(sym, to: MRMediaRemoteGetNowPlayingInfoType.self)
+            }
+            if let sym2 = dlsym(handle, "MRMediaRemoteGetNowPlayingApplicationBundleIdentifier") {
+                MRMediaRemoteGetNowPlayingApplicationBundleIdentifier = unsafeBitCast(sym2, to: MRGetNowPlayingAppBundleIDType.self)
             }
         } else {
             print("⚠️ Failed to load MediaRemote framework path.")
@@ -86,7 +92,7 @@ final class MediaObserver: ObservableObject {
     private func startPolling() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
             self?.fetchCurrentMedia()
-            self?.updatePlayingStateFromSession()
+            self?.detectNowPlayingApp()
         }
         RunLoop.main.add(pollTimer!, forMode: .common)
     }
@@ -96,32 +102,69 @@ final class MediaObserver: ObservableObject {
     }
 
     func fetchCurrentMedia() {
+        // AudioSession can always tell us if OTHER apps are playing audio (sandbox-safe).
+        let sessionDetectsAudio = AVAudioSession.sharedInstance().isOtherAudioPlaying
+        
         if let MRMediaRemoteGetNowPlayingInfo = MRMediaRemoteGetNowPlayingInfo {
             MRMediaRemoteGetNowPlayingInfo(DispatchQueue.main) { [weak self] dict in
                 guard let self = self else { return }
                 let info = dict as? [String: Any] ?? [:]
                 
-                let title = info["kMRMediaRemoteNowPlayingInfoTitle"] as? String ?? "No Media Playing"
-                let artist = info["kMRMediaRemoteNowPlayingInfoArtist"] as? String ?? "Unknown Artist"
-                
-                // Read playback rate (typically Double/Float). If > 0, media is playing.
+                // Try to pull real metadata from MediaRemote
+                let mrTitle = info["kMRMediaRemoteNowPlayingInfoTitle"] as? String
+                let mrArtist = info["kMRMediaRemoteNowPlayingInfoArtist"] as? String
                 let playbackRate = info["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double ?? 0.0
-                let playing = playbackRate > 0.0
+                let mrPlaying = playbackRate > 0.0
                 
-                if title != self.currentTrack || artist != self.currentArtist || playing != self.isPlaying {
-                    self.currentTrack = title
-                    self.currentArtist = artist
-                    self.isPlaying = playing
+                // Did MediaRemote actually return real data? (not just empty dict from sandbox denial)
+                let mrHasRealData = mrTitle != nil || mrArtist != nil
+                
+                let finalTitle: String
+                let finalArtist: String
+                let finalPlaying: Bool
+                
+                if mrHasRealData {
+                    // MediaRemote is functional (TrollStore / entitlements present)
+                    finalTitle = mrTitle ?? "No Media Playing"
+                    finalArtist = mrArtist ?? "Unknown Artist"
+                    finalPlaying = mrPlaying
+                } else if sessionDetectsAudio {
+                    // MediaRemote is sandboxed, but AudioSession confirms audio is playing
+                    finalTitle = "Now Playing"
+                    finalArtist = self.nowPlayingApp.isEmpty ? "Music" : self.nowPlayingApp
+                    finalPlaying = true
+                } else {
+                    // Nothing is playing
+                    finalTitle = "No Media Playing"
+                    finalArtist = "Unknown Artist"
+                    finalPlaying = false
+                }
+                
+                if finalTitle != self.currentTrack || finalArtist != self.currentArtist || finalPlaying != self.isPlaying {
+                    self.currentTrack = finalTitle
+                    self.currentArtist = finalArtist
+                    self.isPlaying = finalPlaying
                     
-                    print("🎵 MediaRemote Intercepted: \(title) — \(artist) (isPlaying: \(playing))")
-                    self.onMetadataChanged?(title, artist)
+                    print("🎵 Media State: \(finalTitle) — \(finalArtist) (isPlaying: \(finalPlaying), source: \(mrHasRealData ? "MediaRemote" : "AudioSession"))")
+                    self.onMetadataChanged?(finalTitle, finalArtist)
                 }
             }
         } else {
-            // Apple Music Fallback
+            // Apple Music Fallback (MediaRemote framework failed to load entirely)
             let player = MPMusicPlayerController.systemMusicPlayer
             let playing = player.playbackState == .playing
-            guard let item = player.nowPlayingItem else { return }
+            guard let item = player.nowPlayingItem else {
+                // No Apple Music item — check AudioSession as last resort
+                if sessionDetectsAudio != isPlaying {
+                    isPlaying = sessionDetectsAudio
+                    if sessionDetectsAudio {
+                        currentTrack = "Now Playing"
+                        currentArtist = "Background Audio"
+                    }
+                    onMetadataChanged?(currentTrack, currentArtist)
+                }
+                return
+            }
             
             let title = item.title ?? "No Media"
             let artist = item.artist ?? "Unknown"
@@ -147,24 +190,60 @@ final class MediaObserver: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             let isPlayingOther = type == .begin
-            let actualOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
-            let finalPlaying = isPlayingOther || actualOtherPlaying
             
-            if finalPlaying != self.isPlaying {
-                self.isPlaying = finalPlaying
-                print("🎵 AudioSession Hint: isPlaying updated to \(finalPlaying)")
+            if isPlayingOther != self.isPlaying {
+                self.isPlaying = isPlayingOther
+                if isPlayingOther && self.currentTrack == "No Media Playing" {
+                    self.currentTrack = "Now Playing"
+                    self.currentArtist = self.nowPlayingApp.isEmpty ? "Music" : self.nowPlayingApp
+                } else if !isPlayingOther && self.currentTrack == "Now Playing" {
+                    self.currentTrack = "No Media Playing"
+                    self.currentArtist = "Unknown Artist"
+                }
+                print("🎵 AudioSession Hint: isPlaying updated to \(isPlayingOther)")
                 self.onMetadataChanged?(self.currentTrack, self.currentArtist)
             }
         }
     }
     
-    private func updatePlayingStateFromSession() {
-        let actualOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
-        if actualOtherPlaying != self.isPlaying {
-            self.isPlaying = actualOtherPlaying
-            print("🎵 AudioSession Fallback Poll: isPlaying updated to \(actualOtherPlaying)")
-            self.onMetadataChanged?(self.currentTrack, self.currentArtist)
+    // MARK: - Now Playing App Detection
+    
+    private func detectNowPlayingApp() {
+        guard let getAppBundleID = MRMediaRemoteGetNowPlayingApplicationBundleIdentifier else { return }
+        getAppBundleID(DispatchQueue.main) { [weak self] bundleID in
+            guard let self = self else { return }
+            let id = bundleID as String
+            guard !id.isEmpty else { return }
+            let appName = self.friendlyAppName(bundleID: id)
+            if appName != self.nowPlayingApp {
+                self.nowPlayingApp = appName
+                // If we're currently showing generic metadata, update the artist to the app name
+                if self.currentTrack == "Now Playing" {
+                    self.currentArtist = appName
+                    self.onMetadataChanged?(self.currentTrack, self.currentArtist)
+                }
+                print("🎵 Detected now-playing app: \(appName) (\(id))")
+            }
         }
+    }
+    
+    private func friendlyAppName(bundleID: String) -> String {
+        let id = bundleID.lowercased()
+        if id.contains("youtubemusic") { return "YouTube Music" }
+        if id.contains("youtube") { return "YouTube" }
+        if id.contains("spotify") { return "Spotify" }
+        if id.contains("apple.music") || id.contains("musicd") { return "Apple Music" }
+        if id.contains("soundcloud") { return "SoundCloud" }
+        if id.contains("amazon") && id.contains("music") { return "Amazon Music" }
+        if id.contains("gaana") { return "Gaana" }
+        if id.contains("jiosaavn") || id.contains("saavn") { return "JioSaavn" }
+        if id.contains("wynk") { return "Wynk Music" }
+        if id.contains("hungama") { return "Hungama" }
+        if id.contains("pandora") { return "Pandora" }
+        if id.contains("tidal") { return "Tidal" }
+        if id.contains("deezer") { return "Deezer" }
+        // Fallback: extract the last component and capitalize it
+        return bundleID.components(separatedBy: ".").last?.capitalized ?? "Music"
     }
     
     private func createSilentWAVData() -> Data {
