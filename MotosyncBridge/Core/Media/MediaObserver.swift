@@ -8,6 +8,8 @@ import MediaPlayer
 
 final class MediaObserver: ObservableObject {
 
+    static let shared = MediaObserver()
+
     @Published var currentTrack: String  = "No Media Playing"
     @Published var currentArtist: String = "Unknown Artist"
     @Published var isPlaying: Bool = false

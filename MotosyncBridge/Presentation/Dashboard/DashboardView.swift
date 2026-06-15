@@ -68,6 +68,10 @@ struct DashboardView: View {
     @EnvironmentObject var ble: BluetoothManager
     @EnvironmentObject var media: MediaObserver
     @StateObject private var nav = NavigationManager.shared
+    @StateObject private var call = CallManager.shared
+    @StateObject private var msg = MessageManager.shared
+    @State private var callerSimName = "John Doe"
+    @State private var callerSimNumber = "+1 (555) 0199"
 
     @FocusState private var isFocused: Bool
 
@@ -144,8 +148,23 @@ struct DashboardView: View {
                 SystemMediaController.shared.nextTrack()
                 return .handled
             case .upArrow, .downArrow, .return:
-                SystemMediaController.shared.togglePlayPause()
+                if CallManager.shared.isIncomingCallActive {
+                    print("📞 Key press simulated answer.")
+                    _ = CallManager.shared.answerCall()
+                } else if CallManager.shared.isCallActive {
+                    print("📞 Key press simulated hangup.")
+                    _ = CallManager.shared.disconnectCall()
+                } else {
+                    SystemMediaController.shared.togglePlayPause()
+                }
                 return .handled
+            case .escape:
+                if CallManager.shared.isIncomingCallActive || CallManager.shared.isCallActive {
+                    print("📞 Key press simulated decline/hangup.")
+                    _ = CallManager.shared.disconnectCall()
+                    return .handled
+                }
+                return .ignored
             default:
                 return .ignored
             }
@@ -213,14 +232,130 @@ struct DashboardView: View {
 
     // MARK: - Media View
     private var mediaView: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 8) {
             Spacer()
             artSection
             Spacer()
             trackSection
             Spacer()
             controlModeDisplay
+            simulatorCard
+                .padding(.bottom, 8)
         }
+    }
+
+    private var simulatorCard: some View {
+        VStack(spacing: 12) {
+            Text("CLUSTER SIMULATOR")
+                .font(.system(size: 9, weight: .black))
+                .foregroundColor(.white.opacity(0.3))
+                .tracking(1.5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            // Call simulation controls
+            HStack(spacing: 8) {
+                if !call.isIncomingCallActive && !call.isCallActive {
+                    Button(action: {
+                        call.simulateIncomingCall(name: callerSimName, number: callerSimNumber)
+                    }) {
+                        Text("SIM INCOMING")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.orange)
+                            .cornerRadius(6)
+                    }
+                } else if call.isIncomingCallActive {
+                    Button(action: {
+                        call.simulateAnswer()
+                    }) {
+                        Text("SIM ANSWER")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.green)
+                            .cornerRadius(6)
+                    }
+                    Button(action: {
+                        call.simulateEnd()
+                    }) {
+                        Text("SIM DECLINE")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.red)
+                            .cornerRadius(6)
+                    }
+                } else {
+                    Button(action: {
+                        call.simulateEnd()
+                    }) {
+                        Text("SIM END CALL")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.red)
+                            .cornerRadius(6)
+                    }
+                }
+                
+                Spacer()
+                
+                // Message simulation controls
+                Button(action: {
+                    if msg.hasUnreadPriorityMessages {
+                        msg.clearMessages()
+                    } else {
+                        msg.simulateNewMessage()
+                    }
+                }) {
+                    Text(msg.hasUnreadPriorityMessages ? "CLEAR MSG" : "SIM MESSAGE")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(msg.hasUnreadPriorityMessages ? .white : .black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(msg.hasUnreadPriorityMessages ? Color.red.opacity(0.8) : Color.yellow)
+                        .cornerRadius(6)
+                }
+            }
+            
+            Divider().background(Color.white.opacity(0.08))
+            
+            // Priority Messaging Apps
+            VStack(alignment: .leading, spacing: 6) {
+                Text("PRIORITY APPS")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white.opacity(0.4))
+                
+                HStack(spacing: 8) {
+                    ForEach(["Messages", "WhatsApp", "Telegram", "Signal"], id: \.self) { app in
+                        Button(action: {
+                            msg.toggleAppPriority(app)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: msg.enabledApps.contains(app) ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 8))
+                                Text(app.uppercased())
+                                    .font(.system(size: 7, weight: .black))
+                            }
+                            .foregroundColor(msg.enabledApps.contains(app) ? Color(red: 0.2, green: 0.9, blue: 0.5) : .white.opacity(0.3))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.03)))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(msg.enabledApps.contains(app) ? Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.3) : Color.white.opacity(0.05), lineWidth: 1))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .padding(.horizontal, 4)
     }
 
     // MARK: - Maps / Navigation View

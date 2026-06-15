@@ -438,10 +438,29 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
                 
             case 0x03: // BACK
                 print("⏮️ Bike requested Back")
+                if CallManager.shared.isIncomingCallActive {
+                    print("📞 Call is incoming! Rejecting/declining call.")
+                    let success = CallManager.shared.disconnectCall()
+                    print("📞 Reject call success: \(success)")
+                } else if CallManager.shared.isCallActive {
+                    print("📞 Call is active! Hanging up call.")
+                    let success = CallManager.shared.disconnectCall()
+                    print("📞 Hangup call success: \(success)")
+                }
                 
             case 0x04: // SELECT (Center press / Play/Pause toggle)
                 print("⏯️ Bike requested Play/Pause Toggle")
-                SystemMediaController.shared.togglePlayPause()
+                if CallManager.shared.isIncomingCallActive {
+                    print("📞 Call is incoming! Answering call.")
+                    let success = CallManager.shared.answerCall()
+                    print("📞 Answer call success: \(success)")
+                } else if CallManager.shared.isCallActive {
+                    print("📞 Call is active! Hanging up call.")
+                    let success = CallManager.shared.disconnectCall()
+                    print("📞 Hangup call success: \(success)")
+                } else {
+                    SystemMediaController.shared.togglePlayPause()
+                }
                 
             case 0x05: // VOLUME_UP
                 print("🔊 Bike requested Volume Up")
@@ -502,6 +521,7 @@ final class BluetoothManager: ObservableObject {
     private var savedAESKey: Data?
     private var pendingAssignments: [Data] = []
     private var currentAssignment: Data?
+    private var callCancellables = Set<AnyCancellable>()
 
     private let  bleDelegate: BLEDelegate
     private var  centralManager: CBCentralManager!
@@ -517,6 +537,35 @@ final class BluetoothManager: ObservableObject {
                 CBCentralManagerOptionRestoreIdentifierKey: "com.priyajit.MotosyncBridge.centralRestorationIdentifier"
             ]
         )
+        setupCallObservers()
+        setupIndicatorObservers()
+    }
+
+    private func setupCallObservers() {
+        Publishers.CombineLatest3(
+            CallManager.shared.$isIncomingCallActive,
+            CallManager.shared.$isCallActive,
+            Publishers.CombineLatest(CallManager.shared.$callerName, CallManager.shared.$callerNumber)
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] isIncoming, isActive, callerInfo in
+            guard let self = self else { return }
+            let (name, number) = callerInfo
+            
+            if isIncoming {
+                let identity = name ?? number ?? "Unknown Caller"
+                print("📞 BluetoothManager: Displaying incoming call: \(identity)")
+                self.sendMetadata(track: "Incoming Call", artist: identity)
+            } else if isActive {
+                let identity = name ?? number ?? "Active Call"
+                print("📞 BluetoothManager: Displaying active call: \(identity)")
+                self.sendMetadata(track: "Active Call", artist: identity)
+            } else {
+                print("📞 BluetoothManager: Call ended. Restoring track metadata: \(self.lastKnownTrack) — \(self.lastKnownArtist)")
+                self.sendMetadata(track: self.lastKnownTrack, artist: self.lastKnownArtist)
+            }
+        }
+        .store(in: &callCancellables)
     }
 
     // MARK: Public API
@@ -604,24 +653,114 @@ final class BluetoothManager: ObservableObject {
         lastKnownArtist = artist
     }
 
+    // MARK: - Paced BLE Write Queue
+    private var writeQueue: [Data] = []
+    private var isWriting: Bool = false
+
+    private func enqueuePacket(_ packet: Data) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.writeQueue.append(packet)
+            self.processWriteQueue()
+        }
+    }
+
+    private func processWriteQueue() {
+        guard !isWriting else { return }
+        guard !writeQueue.isEmpty else { return }
+        guard let peripheral = connectedPeripheral,
+              let txChar = txCharacteristic else {
+            writeQueue.removeAll()
+            return
+        }
+        
+        isWriting = true
+        let packet = writeQueue.removeFirst()
+        peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
+        
+        // Wait 50ms before sending the next packet
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self = self else { return }
+            self.isWriting = false
+            self.processWriteQueue()
+        }
+    }
+
+    private var indicatorCancellables = Set<AnyCancellable>()
+
+    private func setupIndicatorObservers() {
+        Publishers.CombineLatest4(
+            Publishers.CombineLatest(CallManager.shared.$isIncomingCallActive, CallManager.shared.$isCallActive),
+            $isNavigationActive,
+            MediaObserver.shared.$isPlaying,
+            MessageManager.shared.$hasUnreadPriorityMessages
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in
+            self?.updateActiveIndicators()
+        }
+        .store(in: &indicatorCancellables)
+    }
+
+    func updateActiveIndicators() {
+        guard connectedPeripheral != nil,
+              txCharacteristic != nil else { return }
+        guard case .verified = handshakeState else { return }
+        
+        var bitmask: UInt8 = 0
+        
+        // Bit 0: Call / Phone icon (Incoming or Active Call)
+        if CallManager.shared.isIncomingCallActive || CallManager.shared.isCallActive {
+            bitmask |= 0x01
+        }
+        
+        // Bit 1: Navigation icon (Active Routing)
+        if isNavigationActive {
+            bitmask |= 0x02
+        }
+        
+        // Bit 2: Music icon (Active Playback)
+        if MediaObserver.shared.isPlaying {
+            bitmask |= 0x04
+        }
+        
+        // Bit 3: Message icon (Priority message unread)
+        if MessageManager.shared.hasUnreadPriorityMessages {
+            bitmask |= 0x08
+        }
+        
+        let rid = nextRequestId()
+        let packet = Data([0x03, rid, 0x00, bitmask])
+        let hex = packet.map { String(format: "%02x", $0) }
+        print("🏍️ → ActiveIndicators [rid=\(rid), bitmask=\(bitmask)]: \(hex)")
+        enqueuePacket(packet)
+    }
+
     // Sends REQUEST_SAB_MODE (0x0A) to switch console into SAB display mode.
     // Must be called once after handshake before any MYSTERY_BOX projection.
     func sendSABModeRequest() {
-        guard let peripheral = connectedPeripheral,
-              let txChar = txCharacteristic else { return }
+        guard connectedPeripheral != nil,
+              txCharacteristic != nil else { return }
         guard case .verified = handshakeState else { return }
         let rid = nextRequestId()
         let packet = MusicEncoder.generateSABModeRequest(requestId: rid)
         let hex = packet.map { String(format: "%02x", $0) }
         print("🏍️ → SAB MODE REQUEST [\(rid)]: \(hex)")
-        peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
+        enqueuePacket(packet)
     }
 
-    // Sends dynamic LiveScreen projection packet (MYSTERY_BOX / 0x01).
     func sendMetadata(track: String, artist: String) {
+        let isCallStatus = track == "Incoming Call" || track == "Active Call"
+        if !isCallStatus {
+            if CallManager.shared.isIncomingCallActive || CallManager.shared.isCallActive {
+                print("📞 Call is active. Deferring display of music metadata: \(track) — \(artist)")
+                return
+            }
+        }
+        
         guard !isNavigationActive else { return }
-        guard let peripheral = connectedPeripheral,
-              let txChar = txCharacteristic else { return }
+        guard connectedPeripheral != nil,
+              txCharacteristic != nil else { return }
         // Verify we are handshaked/secured before allowing display updates
         guard case .verified = handshakeState else {
             print("⚠️ Metadata send deferred: security handshake not completed yet.")
@@ -631,13 +770,13 @@ final class BluetoothManager: ObservableObject {
         let packet = MusicEncoder.generateDisplayPacket(requestId: rid, title: track, artist: artist)
         let hex = packet.map { String(format: "%02x", $0) }
         print("🎵 → MYSTERY_BOX [rid=\(rid), \(packet.count)B]: \(hex)")
-        peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
+        enqueuePacket(packet)
     }
 
     // Sends dynamic LiveScreen projection packet formatted for navigation.
     func sendNavigationInfo(iconId: UInt8, distance: String, instruction: String) {
-        guard let peripheral = connectedPeripheral,
-              let txChar = txCharacteristic else { return }
+        guard connectedPeripheral != nil,
+              txCharacteristic != nil else { return }
         // Verify we are handshaked/secured before allowing display updates
         guard case .verified = handshakeState else {
             print("⚠️ Navigation send deferred: security handshake not completed yet.")
@@ -647,7 +786,7 @@ final class BluetoothManager: ObservableObject {
         let packet = NavigationEncoder.generateNavigationPacket(requestId: rid, iconId: iconId, distance: distance, instruction: instruction)
         let hex = packet.map { String(format: "%02x", $0) }
         print("🗺️ → NAVIGATION MYSTERY_BOX [rid=\(rid), \(packet.count)B]: \(hex)")
-        peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
+        enqueuePacket(packet)
     }
 
     // MARK: Heartbeat
@@ -658,11 +797,11 @@ final class BluetoothManager: ObservableObject {
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
             [weak self] _ in
             guard let self,
-                  let peripheral = self.connectedPeripheral,
-                  let char = self.txCharacteristic else { return }
+                  self.connectedPeripheral != nil,
+                  self.txCharacteristic != nil else { return }
             let rid = self.nextRequestId()
             let packet = MusicEncoder.generateHeartbeat(requestId: rid)
-            peripheral.writeValue(packet, for: char, type: .withoutResponse)
+            self.enqueuePacket(packet)
         }
         RunLoop.main.add(heartbeatTimer!, forMode: .common)
     }
@@ -1030,10 +1169,11 @@ final class BluetoothManager: ObservableObject {
         // Step 2: Start keep-alive heartbeat (POP_UP, every 2s).
         startHeartbeat()
 
-        // Step 3: Push current track info immediately
+        // Step 3: Push current track info and active indicators immediately
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.sendMetadata(track: self.lastKnownTrack, artist: self.lastKnownArtist)
+            self.updateActiveIndicators()
         }
     }
 

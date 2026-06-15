@@ -6,7 +6,7 @@ import SwiftUI
 struct MotosyncBridgeApp: App {
 
     @StateObject private var bluetoothManager = BluetoothManager.shared
-    @StateObject private var mediaObserver    = MediaObserver()
+    @StateObject private var mediaObserver    = MediaObserver.shared
 
     var body: some Scene {
         WindowGroup {
