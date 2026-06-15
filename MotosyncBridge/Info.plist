@@ -6,7 +6,12 @@
 	<array>
 		<string>bluetooth-central</string>
 		<string>audio</string>
+		<string>location</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Motosync Bridge requires location access to show your route and calculate turn-by-turn directions on the map and console.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Motosync Bridge requires location access in the background to send navigation turn alerts to your motorcycle dashboard and Apple Watch.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Motosync Bridge needs Bluetooth to connect to your Honda dashboard and stream track metadata.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>

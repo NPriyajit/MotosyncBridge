@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 
 // MARK: - Radar Ring (Glowing pulse animation)
 struct RadarRing: View {
@@ -66,6 +67,7 @@ struct WaveBar: View {
 struct DashboardView: View {
     @EnvironmentObject var ble: BluetoothManager
     @EnvironmentObject var media: MediaObserver
+    @StateObject private var nav = NavigationManager.shared
 
     @FocusState private var isFocused: Bool
 
@@ -73,8 +75,23 @@ struct DashboardView: View {
     @State private var trackAppear = false
     @State private var trackKey = UUID()
 
+    // Navigation and Search State
+    enum DashboardTab {
+        case media
+        case navigation
+    }
+    @State private var selectedTab: DashboardTab = .media
+    @State private var searchQuery: String = ""
+    @State private var selectedItem: MKMapItem? = nil
+    @State private var mapCameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var hasPassedInitialThreeSeconds: Bool = false
+
     var isScanning: Bool {
         ble.status == .scanning || ble.status == .connecting
+    }
+
+    var isRefreshEnabled: Bool {
+        hasPassedInitialThreeSeconds && ble.status != .connected
     }
 
     var body: some View {
@@ -92,19 +109,29 @@ struct DashboardView: View {
 
             VStack(spacing: 0) {
                 headerBar
-                Spacer()
-                artSection
-                Spacer()
-                trackSection
-                Spacer()
-                controlModeDisplay
+                
+                // Sliding Segmented Tab Control
+                tabPicker
+                    .padding(.vertical, 16)
+                
+                ZStack {
+                    mediaView
+                        .opacity(selectedTab == .media ? 1 : 0)
+                        .offset(x: selectedTab == .media ? 0 : -500)
+                    
+                    mapsView
+                        .opacity(selectedTab == .navigation ? 1 : 0)
+                        .offset(x: selectedTab == .navigation ? 0 : 500)
+                }
+                .animation(.spring(response: 0.4, dampingFraction: 0.82), value: selectedTab)
+                
                 Spacer()
                 statusBar
                     .padding(.bottom, 32)
             }
             .padding(.horizontal, 28)
         }
-        .focusable()             // <--- ADD THIS
+        .focusable()
         .focused($isFocused)
         .onKeyPress { press in
             print("⌨️ HONDA HOGP BUTTON PRESSED: \(press.key)")
@@ -117,7 +144,6 @@ struct DashboardView: View {
                 SystemMediaController.shared.nextTrack()
                 return .handled
             case .upArrow, .downArrow, .return:
-                // Honda usually uses 'Up' or 'Center/Return' for Play/Pause
                 SystemMediaController.shared.togglePlayPause()
                 return .handled
             default:
@@ -130,13 +156,377 @@ struct DashboardView: View {
             withAnimation(.easeOut(duration: 0.6).delay(0.3)) { trackAppear = true }
             
             media.onMetadataChanged = { t, a in
-                ble.sendMetadata(track: t, artist: a)
+                ble.updateKnownMetadata(track: t, artist: a)
+                if !ble.isNavigationActive {
+                    ble.sendMetadata(track: t, artist: a)
+                }
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.65)) {
                     trackKey = UUID()
                 }
             }
             media.fetchCurrentMedia()
+            
+            // Request location capability prompts
+            nav.requestAlwaysLocationAuthorization()
+            
+            // Enable refresh button after 3 seconds if not connected
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                withAnimation {
+                    hasPassedInitialThreeSeconds = true
+                }
+            }
         }
+    }
+
+    // MARK: - Tab Picker
+    private var tabPicker: some View {
+        HStack(spacing: 0) {
+            ForEach([DashboardTab.media, DashboardTab.navigation], id: \.self) { tab in
+                Button(action: {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                        selectedTab = tab
+                    }
+                }) {
+                    Text(tab == .media ? "MEDIA" : "NAVIGATION")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundColor(selectedTab == tab ? .white : .white.opacity(0.4))
+                        .tracking(1.5)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .background(
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.white.opacity(0.08))
+                    .frame(width: geo.size.width / 2 - 6, height: geo.size.height - 8)
+                    .offset(x: selectedTab == .media ? 3 : geo.size.width / 2 + 3)
+                    .padding(.vertical, 4)
+            }
+        )
+        .background(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.02)))
+        .frame(height: 38)
+        .opacity(appear ? 1 : 0)
+    }
+
+    // MARK: - Media View
+    private var mediaView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            artSection
+            Spacer()
+            trackSection
+            Spacer()
+            controlModeDisplay
+        }
+    }
+
+    // MARK: - Maps / Navigation View
+    private var mapsView: some View {
+        VStack(spacing: 16) {
+            // Sleek Glassmorphic Search Bar
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.white.opacity(0.4))
+                
+                TextField("Search Destination...", text: $searchQuery, onCommit: {
+                    nav.searchDestinations(query: searchQuery)
+                })
+                .foregroundColor(.white)
+                .font(.system(size: 14, weight: .medium))
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                
+                if !searchQuery.isEmpty {
+                    Button(action: {
+                        searchQuery = ""
+                        nav.searchResults = []
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            
+            // Hotspot Categories Grid
+            HStack(spacing: 12) {
+                ForEach(HotspotCategory.allCases, id: \.self) { category in
+                    Button(action: {
+                        nav.searchHotspots(category: category)
+                        searchQuery = category.rawValue
+                    }) {
+                        VStack(spacing: 6) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.04))
+                                    .frame(width: 42, height: 42)
+                                    .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 1))
+                                
+                                Image(systemName: category.sfSymbol)
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                            
+                            Text(category.rawValue.uppercased())
+                                .font(.system(size: 8, weight: .black, design: .rounded))
+                                .foregroundColor(.white.opacity(0.4))
+                                .tracking(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            
+            // Arrow Format Toggle Selector
+            HStack {
+                Text("ARROW FORMAT")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundColor(.white.opacity(0.3))
+                    .tracking(1.5)
+                
+                Spacer()
+                
+                HStack(spacing: 0) {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            nav.useEmojiArrows = true
+                        }
+                    }) {
+                        Text("EMOJI ⬅️")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(nav.useEmojiArrows ? .black : .white.opacity(0.4))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(nav.useEmojiArrows ? Color(red: 0.2, green: 0.9, blue: 0.5) : Color.clear)
+                            .cornerRadius(6)
+                    }
+                    
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            nav.useEmojiArrows = false
+                        }
+                    }) {
+                        Text("ASCII <-")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(!nav.useEmojiArrows ? .black : .white.opacity(0.4))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(!nav.useEmojiArrows ? Color(red: 0.2, green: 0.9, blue: 0.5) : Color.clear)
+                            .cornerRadius(6)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            }
+            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
+            
+            // Map Canvas & Results List
+            ZStack(alignment: .top) {
+                // Interactive Map View
+                Map(position: $mapCameraPosition) {
+                    UserAnnotation()
+                    if let route = nav.selectedRoute {
+                        MapPolyline(route.polyline)
+                            .stroke(Color(red: 0.2, green: 0.9, blue: 0.5), lineWidth: 6)
+                    }
+                }
+                .mapStyle(.standard(pointsOfInterest: .excludingAll))
+                .cornerRadius(18)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .shadow(color: .black.opacity(0.4), radius: 8)
+                
+                // Search Results Dropdown overlay
+                if !nav.searchResults.isEmpty && !nav.isNavigating {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(nav.searchResults, id: \.self) { item in
+                                Button(action: {
+                                    selectedItem = item
+                                    nav.calculateRoute(to: item) { success in
+                                        if success, let rect = nav.selectedRoute?.polyline.boundingMapRect {
+                                            withAnimation(.easeInOut(duration: 0.5)) {
+                                                mapCameraPosition = .rect(rect)
+                                            }
+                                        }
+                                    }
+                                    nav.searchResults = []
+                                    searchQuery = item.name ?? ""
+                                }) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.name ?? "Unknown Location")
+                                            .font(.system(size: 14, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Text(item.placemark.title ?? "")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.white.opacity(0.4))
+                                            .lineLimit(1)
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    
+                                    Divider().background(Color.white.opacity(0.08))
+                                }
+                            }
+                        }
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(red: 0.08, green: 0.08, blue: 0.1)))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                        .padding(.horizontal, 8)
+                        .padding(.top, 8)
+                    }
+                    .frame(maxHeight: 220)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            
+            // Context Action Cards
+            if nav.isNavigating {
+                // Turn-by-Turn Guidance Banner
+                HStack(spacing: 16) {
+                    ZStack {
+                        Circle()
+                            .fill(Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.12))
+                            .frame(width: 50, height: 50)
+                        
+                        Image(systemName: getManeuverSFName(nav.currentManeuverIcon))
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundColor(Color(red: 0.2, green: 0.9, blue: 0.5))
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(formatDistanceText(nav.distanceToNextStep))
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
+                        
+                        Text(nav.currentStepInstruction)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .lineLimit(2)
+                    }
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        nav.stopNavigation()
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 40, height: 40)
+                            .background(Circle().fill(Color.red.opacity(0.85)))
+                            .shadow(color: .red.opacity(0.3), radius: 4)
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let route = nav.selectedRoute {
+                // Route Preview Details
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(selectedItem?.name ?? "Destination")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        HStack(spacing: 6) {
+                            Text(String(format: "%.1f miles", route.distance / 1609.34))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.4))
+                            
+                            Circle()
+                                .fill(Color.white.opacity(0.2))
+                                .frame(width: 4, height: 4)
+                            
+                            Text(formatDuration(route.expectedTravelTime))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                nav.clearRoute()
+                                selectedItem = nil
+                                searchQuery = ""
+                                nav.searchResults = []
+                                mapCameraPosition = .userLocation(fallback: .automatic)
+                            }
+                        }) {
+                            Text("CANCEL")
+                                .font(.system(size: 11, weight: .black, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                        }
+                        
+                        Button(action: {
+                            nav.startNavigation()
+                        }) {
+                            Text("START")
+                                .font(.system(size: 11, weight: .black, design: .rounded))
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 10)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.2, green: 0.9, blue: 0.5)))
+                                .shadow(color: Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.3), radius: 8)
+                        }
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+
+    // MARK: - UI Formatting Helpers
+    
+    private func getManeuverSFName(_ iconId: UInt8) -> String {
+        switch iconId {
+        case 53: return "arrow.turn.up.left"
+        case 44: return "arrow.turn.up.right"
+        case 54: return "arrow.turn.up.left"
+        case 45: return "arrow.turn.up.right"
+        case 55: return "arrow.up.left"
+        case 46: return "arrow.up.right"
+        case 47: return "arrow.uturn.left"
+        case 42: return "arrow.merge"
+        case 59: return "arrow.turn.up.left.fill"
+        case 50: return "arrow.turn.up.right.fill"
+        case 49: return "arrow.counterclockwise"
+        case 83: return "flag.fill"
+        default: return "arrow.up"
+        }
+    }
+
+    private func formatDistanceText(_ meters: CLLocationDistance) -> String {
+        if meters < 1000.0 {
+            return "\(Int(meters)) m"
+        } else {
+            return String(format: "%.1f km", meters / 1000.0)
+        }
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: duration) ?? ""
     }
 
     // MARK: - Control Mode
@@ -172,7 +562,6 @@ struct DashboardView: View {
             }
             Spacer()
             
-            // Animated dynamic icon based on status
             Image(systemName: ble.status == .connected ? "motorcycle.fill" : "motorcycle")
                 .font(.system(size: 32, weight: .light))
                 .foregroundColor(statusColor(ble.status))
@@ -242,10 +631,10 @@ struct DashboardView: View {
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
-                .id(trackKey) // Forces SwiftUI to transition when the text changes
+                .id(trackKey)
                 .transition(.asymmetric(
                     insertion: .offset(y: 15).combined(with: .opacity),
-                    removal:   .offset(y: -15).combined(with: .opacity) // Syntax fixed here!
+                    removal:   .offset(y: -15).combined(with: .opacity)
                 ))
 
             Text(media.currentArtist)
@@ -257,7 +646,7 @@ struct DashboardView: View {
                     removal:   .offset(y: -10).combined(with: .opacity)
                 ))
         }
-        .frame(height: 80) // Prevents UI jumping when text wraps
+        .frame(height: 80)
         .opacity(trackAppear ? 1 : 0)
         .offset(y: trackAppear ? 0 : 15)
         .animation(.easeOut(duration: 0.5), value: trackAppear)
@@ -291,10 +680,22 @@ struct DashboardView: View {
             
             Spacer()
             
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white.opacity(0.3))
-                .symbolEffect(.variableColor.iterative, isActive: isScanning)        }
+            HStack(spacing: 14) {
+                Button(action: {
+                    triggerRefresh()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(isRefreshEnabled ? 0.6 : 0.15))
+                }
+                .disabled(!isRefreshEnabled)
+                
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white.opacity(0.3))
+                    .symbolEffect(.variableColor.iterative, isActive: isScanning)
+            }
+        }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
         .background(
@@ -309,6 +710,18 @@ struct DashboardView: View {
         .offset(y: appear ? 0 : 20)
     }
 
+    private func triggerRefresh() {
+        withAnimation {
+            hasPassedInitialThreeSeconds = false
+        }
+        ble.manualRefresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            withAnimation {
+                hasPassedInitialThreeSeconds = true
+            }
+        }
+    }
+
     private func statusColor(_ s: BLEStatus) -> Color {
         switch s {
         case .connected:             return Color(red: 0.2, green: 0.9, blue: 0.5)
@@ -317,3 +730,4 @@ struct DashboardView: View {
         }
     }
 }
+

@@ -8,6 +8,8 @@ import Foundation
 import CoreBluetooth
 import Combine
 import MediaPlayer
+import AudioToolbox
+import UserNotifications
 
 // MARK: — Status
 
@@ -105,6 +107,65 @@ private enum MusicEncoder {
     }
 }
 
+private enum NavigationEncoder {
+    static func generateNavigationPacket(requestId: UInt8, iconId: UInt8, distance: String, instruction: String) -> Data {
+        var packet = Data()
+        
+        // 1. Command ID: MYSTERY_BOX (0x01)
+        packet.append(0x01)
+        // 2. Request ID
+        packet.append(requestId)
+        // 3. Header Background Color: ORANGE (14)
+        packet.append(14)
+        
+        // 4. Header Text: "Music"
+        let headerText = "Music"
+        let headerBytes = Array(headerText.utf8)
+        packet.append(UInt8(headerBytes.count))
+        if !headerBytes.isEmpty {
+            packet.append(contentsOf: headerBytes)
+            packet.append(0) // Header Text Color: PURE_WHITE (0)
+        }
+        
+        // 5. Body Type: LIVE_SCREEN (2)
+        packet.append(2)
+        // 6. Body Background Color: PURE_BLACK (1)
+        packet.append(1)
+        
+        // 7. Left Action Icon ID: IC_NONE (0)
+        packet.append(0)
+        
+        // 8. Right Action Icon ID: IC_NONE (0)
+        packet.append(0)
+        
+        // 9. Content Background Color: PURE_BLACK (1)
+        packet.append(1)
+        
+        // 10. Content Icon ID: IC_NONE (0) — verified bypass to prevent validation rejections
+        packet.append(0)
+        
+        // 12. Content Text Line 1 (Distance / Arrow representation)
+        let cleanDistance = String(distance.prefix(30))
+        let distanceBytes = Array(cleanDistance.utf8)
+        packet.append(UInt8(distanceBytes.count))
+        if !distanceBytes.isEmpty {
+            packet.append(contentsOf: distanceBytes)
+            packet.append(0) // Color: PURE_WHITE (0)
+        }
+        
+        // 13. Content Text Line 2 (Instruction / Street)
+        let cleanInstruction = String(instruction.prefix(30))
+        let instructionBytes = Array(cleanInstruction.utf8)
+        packet.append(UInt8(instructionBytes.count))
+        if !instructionBytes.isEmpty {
+            packet.append(contentsOf: instructionBytes)
+            packet.append(0) // Color: PURE_WHITE (0)
+        }
+        
+        return packet
+    }
+}
+
 // MARK: — BLEDelegate
 //
 // NSObject subclass owning both CB delegate protocols.
@@ -116,10 +177,37 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
 
     // MARK: CBCentralManagerDelegate
 
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        print("🔒 CoreBluetooth: Restoring central manager state...")
+        guard let m = manager else { return }
+        
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            for peripheral in peripherals {
+                print("🔒 Restored peripheral connection: \(peripheral.name ?? "Unknown") (\(peripheral.identifier.uuidString))")
+                m.targetPeripheral = peripheral
+                m.connectedPeripheral = peripheral
+                peripheral.delegate = self
+                
+                if peripheral.state == .connected {
+                    m.status = .connected
+                    peripheral.discoverServices(nil)
+                } else if peripheral.state == .connecting {
+                    m.status = .connecting
+                }
+            }
+        }
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard let m = manager else { return }
         switch central.state {
-        case .poweredOn:    m.startScanning()
+        case .poweredOn:
+            // 1. Queue direct connection to cached peripheral if available
+            if m.reconnectToLastKnownPeripheral() {
+                print("🔄 Found last known peripheral. Queueing auto-connection...")
+            }
+            // 2. Start scanning simultaneously to resolve advertisements if cached instance is stale or needs discovery
+            m.startScanning()
         case .poweredOff:   m.status = .poweredOff
         case .unauthorized: m.status = .disconnected
         default:            m.status = .poweredOff
@@ -143,13 +231,25 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
         m.targetPeripheral  = peripheral
         peripheral.delegate = self
         m.status            = .connecting
-        central.connect(peripheral, options: nil)
+        central.connect(peripheral, options: [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnNotificationKey: true
+        ])
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         guard let m = manager else { return }
         m.status = .connected
         m.connectedPeripheral = peripheral
+        
+        // Stop active scan to conserve power now that connection is established
+        central.stopScan()
+        
+        // Save successfully connected peripheral UUID string to cache for subsequent launches
+        let uuidString = peripheral.identifier.uuidString
+        UserDefaults.standard.set(uuidString, forKey: "LAST_CONNECTED_PERIPHERAL_UUID")
+        print("💾 Saved last connected peripheral UUID: \(uuidString)")
         
         print("🔗 Connected! Discovering ALL custom services...")
         // Passing nil forces iOS to map the entire hardware profile
@@ -161,7 +261,19 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
                         error: Error?) {
         guard let m = manager else { return }
         m.status = .disconnected
-        DispatchQueue.main.async { m.startScanning() }
+        
+        // Only retry connection if the UUID is still saved in UserDefaults (not manually cleared)
+        if UserDefaults.standard.string(forKey: "LAST_CONNECTED_PERIPHERAL_UUID") == peripheral.identifier.uuidString {
+            print("🔄 Connection failed. Retrying direct connection...")
+            central.connect(peripheral, options: [
+                CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnNotificationKey: true
+            ])
+        } else {
+            print("🔄 Connection failed. Fallback to scanning...")
+            DispatchQueue.main.async { m.startScanning() }
+        }
     }
 
     func centralManager(_ central: CBCentralManager,
@@ -173,7 +285,21 @@ private final class BLEDelegate: NSObject, CBCentralManagerDelegate, CBPeriphera
         m.connectedPeripheral = nil
         m.txCharacteristic    = nil
         m.resetHandshakeState()
-        DispatchQueue.main.async { m.startScanning() }
+        
+        // Bike disconnected or powered down. Queue a background connection request immediately
+        // only if the UUID is still saved in UserDefaults (meaning no manual refresh/reset is active).
+        if UserDefaults.standard.string(forKey: "LAST_CONNECTED_PERIPHERAL_UUID") == peripheral.identifier.uuidString {
+            print("🔄 Bike disconnected. Queuing background reconnection request for \(peripheral.identifier.uuidString)...")
+            m.status = .connecting
+            central.connect(peripheral, options: [
+                CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnNotificationKey: true
+            ])
+        } else {
+            print("🔄 Manual refresh or reset active. Fallback to scanning...")
+            DispatchQueue.main.async { m.startScanning() }
+        }
     }
 
     // MARK: CBPeripheralDelegate
@@ -361,6 +487,7 @@ final class BluetoothManager: ObservableObject {
     @Published var status: BLEStatus = .poweredOff
     @Published var connectedPeripheral: CBPeripheral?
     @Published var handshakeState: HandshakeState = .unverified
+    @Published var isNavigationActive: Bool = false
 
     fileprivate var txCharacteristic: CBCharacteristic?
     fileprivate var targetPeripheral: CBPeripheral?
@@ -385,20 +512,78 @@ final class BluetoothManager: ObservableObject {
         centralManager = CBCentralManager(
             delegate: bleDelegate,
             queue: nil,
-            options: [CBCentralManagerOptionShowPowerAlertKey: true]
+            options: [
+                CBCentralManagerOptionShowPowerAlertKey: true,
+                CBCentralManagerOptionRestoreIdentifierKey: "com.priyajit.MotosyncBridge.centralRestorationIdentifier"
+            ]
         )
     }
 
     // MARK: Public API
+    
+    // Auto-connect to the last successfully connected peripheral identifier cached in UserDefaults
+    func reconnectToLastKnownPeripheral() -> Bool {
+        guard let uuidStr = UserDefaults.standard.string(forKey: "LAST_CONNECTED_PERIPHERAL_UUID"),
+              let uuid = UUID(uuidString: uuidStr) else {
+            return false
+        }
+        
+        print("🔄 Retrieving last known peripheral with UUID: \(uuidStr)")
+        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+        if let lastPeripheral = peripherals.first {
+            print("🔄 Found last known peripheral in system cache. Initiating direct reconnection...")
+            self.targetPeripheral = lastPeripheral
+            self.connectedPeripheral = lastPeripheral
+            lastPeripheral.delegate = self.bleDelegate
+            self.status = .connecting
+            
+            // Reconnect options queued indefinitely by the OS
+            centralManager.connect(lastPeripheral, options: [
+                CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+                CBConnectPeripheralOptionNotifyOnNotificationKey: true
+            ])
+            return true
+        }
+        return false
+    }
+
     func startScanning() {
         guard centralManager.state == .poweredOn else { return }
         status = .scanning
         
-        // References the centralized AppConfiguration file directly
+        // Scan with nil services in foreground to guarantee finding the BTU name
         centralManager.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
+    }
+
+    func manualRefresh() {
+        print("🔄 Manual Bluetooth Refresh Requested...")
+        
+        stopHeartbeat()
+        
+        if let peripheral = connectedPeripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        } else if let peripheral = targetPeripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        
+        connectedPeripheral = nil
+        targetPeripheral = nil
+        txCharacteristic = nil
+        resetHandshakeState()
+        
+        // Clear the saved UUID to allow fresh pairing
+        UserDefaults.standard.removeObject(forKey: "LAST_CONNECTED_PERIPHERAL_UUID")
+        
+        status = .disconnected
+        
+        // Start scanning after a brief delay to allow clean cancellation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.startScanning()
+        }
     }
 
     // Auto-incrementing requestId tracking for GATT display commands
@@ -434,6 +619,7 @@ final class BluetoothManager: ObservableObject {
 
     // Sends dynamic LiveScreen projection packet (MYSTERY_BOX / 0x01).
     func sendMetadata(track: String, artist: String) {
+        guard !isNavigationActive else { return }
         guard let peripheral = connectedPeripheral,
               let txChar = txCharacteristic else { return }
         // Verify we are handshaked/secured before allowing display updates
@@ -445,6 +631,22 @@ final class BluetoothManager: ObservableObject {
         let packet = MusicEncoder.generateDisplayPacket(requestId: rid, title: track, artist: artist)
         let hex = packet.map { String(format: "%02x", $0) }
         print("🎵 → MYSTERY_BOX [rid=\(rid), \(packet.count)B]: \(hex)")
+        peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
+    }
+
+    // Sends dynamic LiveScreen projection packet formatted for navigation.
+    func sendNavigationInfo(iconId: UInt8, distance: String, instruction: String) {
+        guard let peripheral = connectedPeripheral,
+              let txChar = txCharacteristic else { return }
+        // Verify we are handshaked/secured before allowing display updates
+        guard case .verified = handshakeState else {
+            print("⚠️ Navigation send deferred: security handshake not completed yet.")
+            return
+        }
+        let rid = nextRequestId()
+        let packet = NavigationEncoder.generateNavigationPacket(requestId: rid, iconId: iconId, distance: distance, instruction: instruction)
+        let hex = packet.map { String(format: "%02x", $0) }
+        print("🗺️ → NAVIGATION MYSTERY_BOX [rid=\(rid), \(packet.count)B]: \(hex)")
         peripheral.writeValue(packet, for: txChar, type: .withoutResponse)
     }
 
@@ -819,6 +1021,9 @@ final class BluetoothManager: ObservableObject {
         handshakeState = .verified(key: key)
         print("🎉 Honda BTU Security & Assignments complete! Connection is SECURED.")
         
+        // Vibrate phone twice and post lock screen notification to alert rider in background
+        triggerConnectionAlert()
+        
         // Step 1: Tell console to enter SAB display mode before sending any projection.
         sendSABModeRequest()
 
@@ -829,6 +1034,32 @@ final class BluetoothManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.sendMetadata(track: self.lastKnownTrack, artist: self.lastKnownArtist)
+        }
+    }
+
+    private func triggerConnectionAlert() {
+        // Vibrate twice with a short delay
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        }
+        
+        // Deliver local notification so it mirrors to Lock Screen / Apple Watch
+        let content = UNMutableNotificationContent()
+        content.title = "🏍️ Motosync Link Secured"
+        content.body = "Successfully connected to Honda BTU dashboard."
+        content.sound = .default
+        
+        let request = UNNotificationRequest(
+            identifier: "motosync_connection_success",
+            content: content,
+            trigger: nil // Deliver immediately
+        )
+        
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("⚠️ Failed to post connection notification: \(error.localizedDescription)")
+            }
         }
     }
 
