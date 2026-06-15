@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import CoreBluetooth
 
 // MARK: - Radar Ring (Glowing pulse animation)
 struct RadarRing: View {
@@ -83,6 +84,7 @@ struct DashboardView: View {
     enum DashboardTab {
         case media
         case navigation
+        case settings
     }
     @State private var selectedTab: DashboardTab = .media
     @State private var searchQuery: String = ""
@@ -121,11 +123,15 @@ struct DashboardView: View {
                 ZStack {
                     mediaView
                         .opacity(selectedTab == .media ? 1 : 0)
-                        .offset(x: selectedTab == .media ? 0 : -500)
+                        .offset(x: selectedTab == .media ? 0 : (selectedTab == .navigation ? -500 : -1000))
                     
                     mapsView
                         .opacity(selectedTab == .navigation ? 1 : 0)
-                        .offset(x: selectedTab == .navigation ? 0 : 500)
+                        .offset(x: selectedTab == .navigation ? 0 : (selectedTab == .media ? 500 : -500))
+                    
+                    settingsView
+                        .opacity(selectedTab == .settings ? 1 : 0)
+                        .offset(x: selectedTab == .settings ? 0 : (selectedTab == .navigation ? 500 : 1000))
                 }
                 .animation(.spring(response: 0.4, dampingFraction: 0.82), value: selectedTab)
                 
@@ -200,14 +206,14 @@ struct DashboardView: View {
     // MARK: - Tab Picker
     private var tabPicker: some View {
         HStack(spacing: 0) {
-            ForEach([DashboardTab.media, DashboardTab.navigation], id: \.self) { tab in
+            ForEach([DashboardTab.media, DashboardTab.navigation, DashboardTab.settings], id: \.self) { tab in
                 Button(action: {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
                         selectedTab = tab
                     }
                 }) {
-                    Text(tab == .media ? "MEDIA" : "NAVIGATION")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                    Text(tabName(tab))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundColor(selectedTab == tab ? .white : .white.opacity(0.4))
                         .tracking(1.5)
                         .padding(.vertical, 10)
@@ -219,8 +225,8 @@ struct DashboardView: View {
             GeometryReader { geo in
                 RoundedRectangle(cornerRadius: 10)
                     .fill(Color.white.opacity(0.08))
-                    .frame(width: geo.size.width / 2 - 6, height: geo.size.height - 8)
-                    .offset(x: selectedTab == .media ? 3 : geo.size.width / 2 + 3)
+                    .frame(width: geo.size.width / 3 - 6, height: geo.size.height - 8)
+                    .offset(x: offsetForTab(selectedTab, totalWidth: geo.size.width))
                     .padding(.vertical, 4)
             }
         )
@@ -230,28 +236,37 @@ struct DashboardView: View {
         .opacity(appear ? 1 : 0)
     }
 
+    private func tabName(_ tab: DashboardTab) -> String {
+        switch tab {
+        case .media: return "MEDIA"
+        case .navigation: return "NAVIGATION"
+        case .settings: return "SETTINGS"
+        }
+    }
+
+    private func offsetForTab(_ tab: DashboardTab, totalWidth: CGFloat) -> CGFloat {
+        let tabWidth = totalWidth / 3
+        switch tab {
+        case .media: return 3
+        case .navigation: return tabWidth + 3
+        case .settings: return (tabWidth * 2) + 3
+        }
+    }
+
     // MARK: - Media View
     private var mediaView: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             Spacer()
             artSection
             Spacer()
             trackSection
             Spacer()
             controlModeDisplay
-            simulatorCard
-                .padding(.bottom, 8)
         }
     }
 
     private var simulatorCard: some View {
         VStack(spacing: 12) {
-            Text("CLUSTER SIMULATOR")
-                .font(.system(size: 9, weight: .black))
-                .foregroundColor(.white.opacity(0.3))
-                .tracking(1.5)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            
             // Call simulation controls
             HStack(spacing: 8) {
                 if !call.isIncomingCallActive && !call.isCallActive {
@@ -322,40 +337,97 @@ struct DashboardView: View {
                         .cornerRadius(6)
                 }
             }
-            
-            Divider().background(Color.white.opacity(0.08))
-            
-            // Priority Messaging Apps
-            VStack(alignment: .leading, spacing: 6) {
-                Text("PRIORITY APPS")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white.opacity(0.4))
-                
-                HStack(spacing: 8) {
-                    ForEach(["Messages", "WhatsApp", "Telegram", "Signal"], id: \.self) { app in
-                        Button(action: {
-                            msg.toggleAppPriority(app)
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: msg.enabledApps.contains(app) ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 8))
-                                Text(app.uppercased())
-                                    .font(.system(size: 7, weight: .black))
-                            }
-                            .foregroundColor(msg.enabledApps.contains(app) ? Color(red: 0.2, green: 0.9, blue: 0.5) : .white.opacity(0.3))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.03)))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(msg.enabledApps.contains(app) ? Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.3) : Color.white.opacity(0.05), lineWidth: 1))
-                        }
-                    }
-                }
-            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
         .padding(.horizontal, 4)
+    }
+
+    private var settingsView: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                // Connection Status section
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("DEVICE CONFIGURATION")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(.white.opacity(0.3))
+                        .tracking(1.5)
+                    
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(ble.connectedPeripheral?.name ?? (ble.status == .scanning ? "SEARCHING..." : "DISCONNECTED"))
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                            
+                            Text(ble.connectedPeripheral?.identifier.uuidString ?? "UUID: N/A")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                        Spacer()
+                        
+                        Button(action: {
+                            triggerRefresh()
+                        }) {
+                            Text(ble.status == .connecting ? "CONNECTING..." : "REFRESH")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(ble.status == .connected ? Color(red: 0.2, green: 0.9, blue: 0.5) : Color.orange)
+                                .cornerRadius(8)
+                        }
+                    }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.03)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
+                
+                // Priority Notification Apps
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("PRIORITY MESSAGING")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(.white.opacity(0.3))
+                        .tracking(1.5)
+                    
+                    VStack(spacing: 0) {
+                        ForEach(["Messages", "WhatsApp", "Telegram", "Signal"], id: \.self) { app in
+                            Button(action: {
+                                msg.toggleAppPriority(app)
+                            }) {
+                                HStack {
+                                    Text(app)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    Image(systemName: msg.enabledApps.contains(app) ? "checkmark.circle.fill" : "circle")
+                                        .foregroundColor(msg.enabledApps.contains(app) ? Color(red: 0.2, green: 0.9, blue: 0.5) : .white.opacity(0.2))
+                                }
+                                .padding(.vertical, 12)
+                                .padding(.horizontal, 14)
+                            }
+                            if app != "Signal" {
+                                Divider().background(Color.white.opacity(0.08))
+                            }
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.03)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
+                
+                // Cluster simulator debug card
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("CLUSTER HARDWARE SIMULATOR")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(.white.opacity(0.3))
+                        .tracking(1.5)
+                    
+                    simulatorCard
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.bottom, 24)
+        }
     }
 
     // MARK: - Maps / Navigation View

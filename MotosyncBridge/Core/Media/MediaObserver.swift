@@ -73,11 +73,20 @@ final class MediaObserver: ObservableObject {
             name: NSNotification.Name(rawValue: "kMRMediaRemoteNowPlayingInfoDidChangeNotification"),
             object: nil
         )
+        
+        // Listen to secondary audio hint notifications as a sandbox-safe fallback
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSecondaryAudioHint),
+            name: AVAudioSession.silenceSecondaryAudioHintNotification,
+            object: nil
+        )
     }
 
     private func startPolling() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
             self?.fetchCurrentMedia()
+            self?.updatePlayingStateFromSession()
         }
         RunLoop.main.add(pollTimer!, forMode: .common)
     }
@@ -125,6 +134,36 @@ final class MediaObserver: ObservableObject {
             
             print("🎵 Apple Music Fallback: \(title) — \(artist)")
             onMetadataChanged?(title, artist)
+        }
+    }
+    
+    @objc private func handleSecondaryAudioHint(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionSilenceSecondaryAudioHintTypeKey] as? UInt,
+              let type = AVAudioSession.SilenceSecondaryAudioHintType(rawValue: typeValue) else {
+            return
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let isPlayingOther = type == .begin
+            let actualOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
+            let finalPlaying = isPlayingOther || actualOtherPlaying
+            
+            if finalPlaying != self.isPlaying {
+                self.isPlaying = finalPlaying
+                print("🎵 AudioSession Hint: isPlaying updated to \(finalPlaying)")
+                self.onMetadataChanged?(self.currentTrack, self.currentArtist)
+            }
+        }
+    }
+    
+    private func updatePlayingStateFromSession() {
+        let actualOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
+        if actualOtherPlaying != self.isPlaying {
+            self.isPlaying = actualOtherPlaying
+            print("🎵 AudioSession Fallback Poll: isPlaying updated to \(actualOtherPlaying)")
+            self.onMetadataChanged?(self.currentTrack, self.currentArtist)
         }
     }
     
