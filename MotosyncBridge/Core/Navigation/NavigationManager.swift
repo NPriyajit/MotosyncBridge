@@ -8,6 +8,7 @@
 import Foundation
 import MapKit
 import CoreLocation
+import UIKit
 import Combine
 import UserNotifications
 
@@ -67,8 +68,8 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
     private override init() {
         super.init()
         locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = 5.0 // Update every 5 meters
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        locationManager.distanceFilter = 50.0 // Update every 50 meters (discovery, not turn-by-turn)
         locationManager.activityType = .automotiveNavigation
         
         // Request in-use authorization initially (standard practice)
@@ -128,7 +129,26 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
     
     // Search nearby hotspot categories
     func searchHotspots(category: HotspotCategory) {
-        guard let location = userLocation else { return }
+        guard let location = userLocation else {
+            // If no location yet, request it and try searching with a broad query
+            locationManager.requestLocation()
+            
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = category.searchKeyword
+            
+            let search = MKLocalSearch(request: request)
+            search.start { [weak self] response, error in
+                guard let self = self else { return }
+                if let error = error {
+                    print("⚠️ Hotspot search error: \(error.localizedDescription)")
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.searchResults = response?.mapItems ?? []
+                }
+            }
+            return
+        }
         
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = category.searchKeyword
@@ -150,6 +170,99 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
             }
         }
     }
+    
+    // MARK: - External Maps Handoff
+    
+    /// Open the selected destination in the user's preferred external map app.
+    /// Apple Maps is always available; Google Maps falls back to web if not installed.
+    func openInExternalMaps(item: MKMapItem) {
+        let lat = item.placemark.coordinate.latitude
+        let lon = item.placemark.coordinate.longitude
+        let name = item.name?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Destination"
+        
+        switch AppConfiguration.preferredMapApp {
+        case .appleMaps:
+            // Apple Maps universal link — always works on iOS
+            let urlString = "http://maps.apple.com/?saddr=Current+Location&daddr=\(lat),\(lon)&dirflg=d&q=\(name)"
+            if let url = URL(string: urlString) {
+                UIApplication.shared.open(url)
+            }
+            
+        case .googleMaps:
+            // Try native Google Maps app first
+            let gmapsAppURL = "comgooglemaps://?saddr=&daddr=\(lat),\(lon)&directionsmode=driving"
+            let gmapsWebURL = "https://www.google.com/maps/dir/?api=1&destination=\(lat),\(lon)&travelmode=driving"
+            
+            if let appURL = URL(string: gmapsAppURL), UIApplication.shared.canOpenURL(appURL) {
+                UIApplication.shared.open(appURL)
+            } else if let webURL = URL(string: gmapsWebURL) {
+                // Fallback to Google Maps in browser
+                UIApplication.shared.open(webURL)
+            }
+        case .inApp:
+            break
+        }
+    }
+    
+    /// Calculate straight-line distance from user to a map item (for display in the list)
+    func distanceToItem(_ item: MKMapItem) -> CLLocationDistance? {
+        guard let userLoc = userLocation else { return nil }
+        let itemLocation = CLLocation(
+            latitude: item.placemark.coordinate.latitude,
+            longitude: item.placemark.coordinate.longitude
+        )
+        return userLoc.distance(from: itemLocation)
+    }
+    
+    /// Format distance for display (e.g. "1.2 km" or "350 m")
+    func formattedDistance(to item: MKMapItem) -> String? {
+        guard let dist = distanceToItem(item) else { return nil }
+        if dist < 1000.0 {
+            return "\(Int(dist)) m"
+        } else {
+            return String(format: "%.1f km", dist / 1000.0)
+        }
+    }
+    
+    // MARK: - CLLocationManagerDelegate
+    
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        DispatchQueue.main.async {
+            self.userLocation = location
+            
+            if self.isNavigating {
+                // Update ETA and route properties dynamically
+                if let route = self.selectedRoute {
+                    // Reduce overall remaining distance based on step progression
+                    let completedStepsDistance = self.activeSteps.prefix(self.currentStepIndex).reduce(0.0) { $0 + $1.distance }
+                    self.remainingDistance = max(0.0, route.distance - completedStepsDistance - (self.distanceToNextStep - self.activeSteps[self.currentStepIndex].distance))
+                    
+                    // Rough travel time approximation
+                    let travelTimeFactor = self.remainingDistance / max(1.0, route.distance)
+                    self.remainingDuration = route.expectedTravelTime * travelTimeFactor
+                    self.eta = Date().addingTimeInterval(self.remainingDuration)
+                }
+                
+                self.updateGuidance()
+            }
+        }
+    }
+    
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationManager.startUpdatingLocation()
+        default:
+            break
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        print("⚠️ CoreLocation Error: \(error.localizedDescription)")
+    }
+    
+    // MARK: - In-App Navigation Actions
     
     // Calculate route to a map destination
     func calculateRoute(to destination: MKMapItem, completion: @escaping (Bool) -> Void = { _ in }) {
@@ -204,7 +317,9 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
             self.currentStepIndex = 0
             self.lastNotifiedStepIndex = -1
             
-            // Set up background location updates
+            // Set up background location updates and higher accuracy
+            self.locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+            self.locationManager.distanceFilter = 5.0 // Update every 5 meters
             self.locationManager.allowsBackgroundLocationUpdates = true
             self.locationManager.showsBackgroundLocationIndicator = true
             self.locationManager.startUpdatingLocation()
@@ -222,7 +337,9 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
         DispatchQueue.main.async {
             self.isNavigating = false
             
-            // Disable background location updates to conserve power
+            // Disable background location updates and restore lower accuracy to conserve power
+            self.locationManager.desiredAccuracy = kCLLocationAccuracyBest
+            self.locationManager.distanceFilter = 50.0 // Update every 50 meters
             self.locationManager.allowsBackgroundLocationUpdates = false
             self.locationManager.showsBackgroundLocationIndicator = false
             self.locationManager.stopUpdatingLocation()
@@ -304,47 +421,6 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
             triggerNotification(title: formattedDistance, body: formattedInstruction)
         }
     }
-    
-    // Core Location delegate method
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last else { return }
-        
-        DispatchQueue.main.async {
-            self.userLocation = location
-            
-            if self.isNavigating {
-                // Update ETA and route properties dynamically
-                if let route = self.selectedRoute {
-                    // Reduce overall remaining distance based on step progression
-                    let completedStepsDistance = self.activeSteps.prefix(self.currentStepIndex).reduce(0.0) { $0 + $1.distance }
-                    self.remainingDistance = max(0.0, route.distance - completedStepsDistance - (self.distanceToNextStep - self.activeSteps[self.currentStepIndex].distance))
-                    
-                    // Rough travel time approximation
-                    let travelTimeFactor = self.remainingDistance / max(1.0, route.distance)
-                    self.remainingDuration = route.expectedTravelTime * travelTimeFactor
-                    self.eta = Date().addingTimeInterval(self.remainingDuration)
-                }
-                
-                self.updateGuidance()
-            }
-        }
-    }
-    
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        switch manager.authorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            // Start listening to coordinate updates to track position immediately
-            locationManager.startUpdatingLocation()
-        default:
-            break
-        }
-    }
-    
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("⚠️ CoreLocation Error: \(error.localizedDescription)")
-    }
-    
-    // MARK: - Helper Utilities
     
     private func distanceBetween(_ coord1: CLLocationCoordinate2D, _ coord2: CLLocationCoordinate2D) -> CLLocationDistance {
         let loc1 = CLLocation(latitude: coord1.latitude, longitude: coord1.longitude)
@@ -513,3 +589,4 @@ final class NavigationManager: NSObject, ObservableObject, CLLocationManagerDele
         UNUserNotificationCenter.current().add(request)
     }
 }
+

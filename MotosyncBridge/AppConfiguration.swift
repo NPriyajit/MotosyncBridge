@@ -38,4 +38,24 @@ enum AppConfiguration {
     // Set to .systemWide for YouTube Music / Spotify control (requires TrollStore/Jailbreak entitlements on device).
     // Set to .appleMusic for native sandboxed Apple Music control on any stock iPhone.
     static let mediaControlMode: MediaControlMode = .systemWide
+    
+    // Preferred Map App for external navigation handoff
+    enum PreferredMapApp: String, CaseIterable {
+        case appleMaps = "Apple Maps"
+        case googleMaps = "Google Maps"
+        case inApp = "In-App Map"
+    }
+    
+    static var preferredMapApp: PreferredMapApp {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: "preferredMapApp"),
+                  let pref = PreferredMapApp(rawValue: raw) else {
+                return .appleMaps
+            }
+            return pref
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "preferredMapApp")
+        }
+    }
 }

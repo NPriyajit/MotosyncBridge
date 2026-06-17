@@ -65,13 +65,8 @@ final class CallManager: NSObject, ObservableObject, CXCallObserverDelegate {
         print("⚠️ CallManager: TelephonyUtilities unavailable, falling back to public CallKit.")
     }
     
-    // MARK: - CXCallObserverDelegate (Public API Fallback)
+    // MARK: - CXCallObserverDelegate (Public API Fallback & Controller)
     func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
-        if isPrivateAPIAvailable {
-            // Let the private API handle it if available to get caller details
-            return
-        }
-        
         let calls = callObserver.calls.filter { !$0.hasEnded }
         let hasIncoming = calls.contains { !$0.hasConnected && !$0.isOutgoing }
         let hasActive = calls.contains { $0.hasConnected }
@@ -79,12 +74,28 @@ final class CallManager: NSObject, ObservableObject, CXCallObserverDelegate {
         DispatchQueue.main.async {
             self.isIncomingCallActive = hasIncoming
             self.isCallActive = hasActive
+            
             if hasIncoming {
-                self.callerName = "Incoming Call"
-                self.callerNumber = "Unknown Number"
+                if self.isPrivateAPIAvailable {
+                    self.updatePrivateCallState()
+                    if self.callerName == nil {
+                        self.callerName = "Incoming Call"
+                        self.callerNumber = "Unknown Number"
+                    }
+                } else {
+                    self.callerName = "Incoming Call"
+                    self.callerNumber = "Unknown Number"
+                }
             } else if hasActive {
-                self.callerName = "Active Call"
-                self.callerNumber = nil
+                if self.isPrivateAPIAvailable {
+                    self.updatePrivateCallState()
+                    if self.callerName == nil {
+                        self.callerName = "Active Call"
+                    }
+                } else {
+                    self.callerName = "Active Call"
+                    self.callerNumber = nil
+                }
             } else {
                 self.callerName = nil
                 self.callerNumber = nil

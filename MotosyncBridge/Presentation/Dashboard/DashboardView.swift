@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreBluetooth
+import CoreLocation
 
 // MARK: - Radar Ring (Glowing pulse animation)
 struct RadarRing: View {
@@ -86,9 +87,10 @@ struct DashboardView: View {
     }
     @State private var selectedTab: DashboardTab = .media
     @State private var searchQuery: String = ""
+    @State private var hasPassedInitialThreeSeconds: Bool = false
+    @State private var selectedMapApp: AppConfiguration.PreferredMapApp = AppConfiguration.preferredMapApp
     @State private var selectedItem: MKMapItem? = nil
     @State private var mapCameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
-    @State private var hasPassedInitialThreeSeconds: Bool = false
 
     var isScanning: Bool {
         ble.status == .scanning || ble.status == .connecting
@@ -360,7 +362,7 @@ struct DashboardView: View {
             // 2. Navigation Icon
             indicatorIcon(
                 systemName: "location.circle.fill",
-                isActive: nav.isNavigating || ble.isNavigationActive,
+                isActive: nav.isNavigating || ble.isNavigationActive || !nav.searchResults.isEmpty,
                 activeColor: Color(red: 0.2, green: 0.9, blue: 0.5)
             )
             
@@ -480,6 +482,53 @@ struct DashboardView: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
                 }
                 
+                // Navigation Preferences
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("NAVIGATION PREFERENCES")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(.white.opacity(0.3))
+                        .tracking(1.5)
+                    
+                    VStack(spacing: 0) {
+                        ForEach(AppConfiguration.PreferredMapApp.allCases, id: \.self) { mapApp in
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedMapApp = mapApp
+                                    AppConfiguration.preferredMapApp = mapApp
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: mapApp == .appleMaps ? "map.fill" : (mapApp == .googleMaps ? "globe" : "location.circle.fill"))
+                                        .font(.system(size: 14))
+                                        .foregroundColor(selectedMapApp == mapApp ? Color(red: 0.2, green: 0.9, blue: 0.5) : .white.opacity(0.4))
+                                        .frame(width: 24)
+                                    
+                                    Text(mapApp.rawValue)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.white)
+                                    
+                                    Spacer()
+                                    
+                                    Image(systemName: selectedMapApp == mapApp ? "checkmark.circle.fill" : "circle")
+                                        .foregroundColor(selectedMapApp == mapApp ? Color(red: 0.2, green: 0.9, blue: 0.5) : .white.opacity(0.2))
+                                }
+                                .padding(.vertical, 12)
+                                .padding(.horizontal, 14)
+                            }
+                            if mapApp != AppConfiguration.PreferredMapApp.allCases.last {
+                                Divider().background(Color.white.opacity(0.08))
+                            }
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.03)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                    
+                    Text(selectedMapApp == .inApp ? "Route and navigation will be managed entirely within this app." : "Places found in the Navigation tab will open in your preferred map app for directions.")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.2))
+                        .padding(.horizontal, 4)
+                }
+                
                 // End of Settings Options
                 Spacer(minLength: 10)
             }
@@ -508,6 +557,10 @@ struct DashboardView: View {
                     Button(action: {
                         searchQuery = ""
                         nav.searchResults = []
+                        if selectedMapApp == .inApp {
+                            nav.clearRoute()
+                            selectedItem = nil
+                        }
                     }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.white.opacity(0.4))
@@ -523,24 +576,33 @@ struct DashboardView: View {
             HStack(spacing: 12) {
                 ForEach(HotspotCategory.allCases, id: \.self) { category in
                     Button(action: {
-                        nav.searchHotspots(category: category)
-                        searchQuery = category.rawValue
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            nav.searchHotspots(category: category)
+                            searchQuery = category.rawValue
+                            if selectedMapApp == .inApp {
+                                nav.clearRoute()
+                                selectedItem = nil
+                            }
+                        }
                     }) {
                         VStack(spacing: 6) {
                             ZStack {
                                 Circle()
-                                    .fill(Color.white.opacity(0.04))
+                                    .fill(searchQuery == category.rawValue ? Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.15) : Color.white.opacity(0.04))
                                     .frame(width: 42, height: 42)
-                                    .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 1))
+                                    .overlay(Circle().stroke(
+                                        searchQuery == category.rawValue ? Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.4) : Color.white.opacity(0.08),
+                                        lineWidth: 1
+                                    ))
                                 
                                 Image(systemName: category.sfSymbol)
                                     .font(.system(size: 15, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.8))
+                                    .foregroundColor(searchQuery == category.rawValue ? Color(red: 0.2, green: 0.9, blue: 0.5) : .white.opacity(0.8))
                             }
                             
                             Text(category.rawValue.uppercased())
                                 .font(.system(size: 8, weight: .black, design: .rounded))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(searchQuery == category.rawValue ? Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.7) : .white.opacity(0.4))
                                 .tracking(1)
                         }
                         .frame(maxWidth: .infinity)
@@ -549,249 +611,303 @@ struct DashboardView: View {
             }
             .padding(.vertical, 4)
             
-            // Arrow Format Toggle Selector
-            HStack {
-                Text("ARROW FORMAT")
-                    .font(.system(size: 9, weight: .black))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(1.5)
-                
-                Spacer()
-                
-                HStack(spacing: 0) {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            nav.useEmojiArrows = true
+            if selectedMapApp == .inApp {
+                // IN-APP MAP RENDERING FLOW
+                ZStack(alignment: .top) {
+                    // Map view only rendered when tab is active to eliminate background lags
+                    if selectedTab == .navigation {
+                        Map(position: $mapCameraPosition) {
+                            UserAnnotation()
+                            if let route = nav.selectedRoute {
+                                MapPolyline(route.polyline)
+                                    .stroke(Color(red: 0.2, green: 0.9, blue: 0.5), lineWidth: 6)
+                            }
                         }
-                    }) {
-                        Text("EMOJI ⬅️")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(nav.useEmojiArrows ? .black : .white.opacity(0.4))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(nav.useEmojiArrows ? Color(red: 0.2, green: 0.9, blue: 0.5) : Color.clear)
-                            .cornerRadius(6)
+                        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+                        .cornerRadius(18)
+                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.4), radius: 8)
+                        .animation(nil, value: selectedTab) // Prevent ZStack offset animations from updating/animating Map frame
+                    } else {
+                        // Placeholders to keep ZStack sizing identical while inactive
+                        Color.clear
+                            .cornerRadius(18)
                     }
                     
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            nav.useEmojiArrows = false
-                        }
-                    }) {
-                        Text("ASCII <-")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(!nav.useEmojiArrows ? .black : .white.opacity(0.4))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(!nav.useEmojiArrows ? Color(red: 0.2, green: 0.9, blue: 0.5) : Color.clear)
-                            .cornerRadius(6)
-                    }
-                }
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 1))
-            }
-            .padding(.horizontal, 4)
-            .padding(.bottom, 4)
-            
-            // Map Canvas & Results List
-            ZStack(alignment: .top) {
-                // Interactive Map View
-                Map(position: $mapCameraPosition) {
-                    UserAnnotation()
-                    if let route = nav.selectedRoute {
-                        MapPolyline(route.polyline)
-                            .stroke(Color(red: 0.2, green: 0.9, blue: 0.5), lineWidth: 6)
-                    }
-                }
-                .mapStyle(.standard(pointsOfInterest: .excludingAll))
-                .cornerRadius(18)
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
-                .shadow(color: .black.opacity(0.4), radius: 8)
-                
-                // Search Results Dropdown overlay
-                if !nav.searchResults.isEmpty && !nav.isNavigating {
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            ForEach(nav.searchResults, id: \.self) { item in
-                                Button(action: {
-                                    selectedItem = item
-                                    nav.calculateRoute(to: item) { success in
-                                        if success, let rect = nav.selectedRoute?.polyline.boundingMapRect {
-                                            withAnimation(.easeInOut(duration: 0.5)) {
-                                                mapCameraPosition = .rect(rect)
+                    // Search Results dropdown overlay
+                    if !nav.searchResults.isEmpty && !nav.isNavigating {
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                ForEach(nav.searchResults, id: \.self) { item in
+                                    Button(action: {
+                                        withAnimation(.easeInOut(duration: 0.3)) {
+                                            selectedItem = item
+                                            searchQuery = item.name ?? ""
+                                        }
+                                        nav.calculateRoute(to: item) { success in
+                                            if success, let rect = nav.selectedRoute?.polyline.boundingMapRect {
+                                                withAnimation(.easeInOut(duration: 0.5)) {
+                                                    mapCameraPosition = .rect(rect)
+                                                }
                                             }
                                         }
+                                    }) {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(item.name ?? "Unknown Location")
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundColor(.white)
+                                            Text(item.placemark.title ?? "")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.white.opacity(0.4))
+                                                .lineLimit(1)
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        
+                                        Divider().background(Color.white.opacity(0.08))
                                     }
-                                    nav.searchResults = []
-                                    searchQuery = item.name ?? ""
-                                }) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.name ?? "Unknown Location")
-                                            .font(.system(size: 14, weight: .bold))
-                                            .foregroundColor(.white)
-                                        Text(item.placemark.title ?? "")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(.white.opacity(0.4))
-                                            .lineLimit(1)
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 12)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    
-                                    Divider().background(Color.white.opacity(0.08))
                                 }
                             }
+                            .background(RoundedRectangle(cornerRadius: 14).fill(Color(red: 0.08, green: 0.08, blue: 0.1)))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                            .padding(.horizontal, 8)
+                            .padding(.top, 8)
                         }
-                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(red: 0.08, green: 0.08, blue: 0.1)))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.12), lineWidth: 1))
-                        .padding(.horizontal, 8)
-                        .padding(.top, 8)
-                    }
-                    .frame(maxHeight: 220)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-            
-            // Context Action Cards
-            if nav.isNavigating {
-                // Turn-by-Turn Guidance Banner
-                HStack(spacing: 16) {
-                    ZStack {
-                        Circle()
-                            .fill(Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.12))
-                            .frame(width: 50, height: 50)
-                        
-                        Image(systemName: getManeuverSFName(nav.currentManeuverIcon))
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundColor(Color(red: 0.2, green: 0.9, blue: 0.5))
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(formatDistanceText(nav.distanceToNextStep))
-                            .font(.system(size: 18, weight: .black, design: .rounded))
-                            .foregroundColor(.white)
-                        
-                        Text(nav.currentStepInstruction)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.7))
-                            .lineLimit(2)
-                    }
-                    
-                    Spacer()
-                    
-                    Button(action: {
-                        nav.stopNavigation()
-                    }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Color.red.opacity(0.85)))
-                            .shadow(color: .red.opacity(0.3), radius: 4)
+                        .frame(maxHeight: 220)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if let route = nav.selectedRoute {
-                // Route Preview Details
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(selectedItem?.name ?? "Destination")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.white)
-                        
-                        HStack(spacing: 6) {
-                            Text(String(format: "%.1f miles", route.distance / 1609.34))
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.white.opacity(0.4))
-                            
+                
+                // Context Action Cards for In-App Nav
+                if nav.isNavigating {
+                    // Turn-by-Turn Guidance Banner
+                    HStack(spacing: 16) {
+                        ZStack {
                             Circle()
-                                .fill(Color.white.opacity(0.2))
-                                .frame(width: 4, height: 4)
+                                .fill(Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.12))
+                                .frame(width: 50, height: 50)
                             
-                            Text(formatDuration(route.expectedTravelTime))
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.white.opacity(0.4))
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    HStack(spacing: 8) {
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                nav.clearRoute()
-                                selectedItem = nil
-                                searchQuery = ""
-                                nav.searchResults = []
-                                mapCameraPosition = .userLocation(fallback: .automatic)
-                            }
-                        }) {
-                            Text("CANCEL")
-                                .font(.system(size: 11, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            Image(systemName: getManeuverSFName(nav.currentManeuverIcon))
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(Color(red: 0.2, green: 0.9, blue: 0.5))
                         }
                         
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(formatDistanceText(nav.distanceToNextStep))
+                                .font(.system(size: 18, weight: .black, design: .rounded))
+                                .foregroundColor(.white)
+                            
+                            Text(nav.currentStepInstruction)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.7))
+                                .lineLimit(2)
+                        }
+                        
+                        Spacer()
+                        
                         Button(action: {
-                            nav.startNavigation()
+                            nav.stopNavigation()
                         }) {
-                            Text("START")
-                                .font(.system(size: 11, weight: .black, design: .rounded))
-                                .foregroundColor(.black)
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 10)
-                                .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.2, green: 0.9, blue: 0.5)))
-                                .shadow(color: Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.3), radius: 8)
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 40, height: 40)
+                                .background(Circle().fill(Color.red.opacity(0.85)))
+                                .shadow(color: .red.opacity(0.3), radius: 4)
                         }
                     }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if let route = nav.selectedRoute {
+                    // Route Preview Details
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(selectedItem?.name ?? "Destination")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            
+                            HStack(spacing: 6) {
+                                Text(String(format: "%.1f miles", route.distance / 1609.34))
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.4))
+                                
+                                Circle()
+                                    .fill(Color.white.opacity(0.2))
+                                    .frame(width: 4, height: 4)
+                                
+                                Text(formatDuration(route.expectedTravelTime))
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.4))
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        HStack(spacing: 8) {
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    nav.clearRoute()
+                                    selectedItem = nil
+                                    searchQuery = ""
+                                    nav.searchResults = []
+                                    mapCameraPosition = .userLocation(fallback: .automatic)
+                                }
+                            }) {
+                                Text("CANCEL")
+                                    .font(.system(size: 11, weight: .black, design: .rounded))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))
+                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            }
+                            
+                            Button(action: {
+                                nav.startNavigation()
+                            }) {
+                                Text("START")
+                                    .font(.system(size: 11, weight: .black, design: .rounded))
+                                    .foregroundColor(.black)
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 10)
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.2, green: 0.9, blue: 0.5)))
+                                    .shadow(color: Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.3), radius: 8)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                // EXTERNAL HANDOFF LIST FLOW
+                // Results List or Empty State
+                if nav.searchResults.isEmpty {
+                    // Empty State
+                    VStack(spacing: 16) {
+                        Spacer()
+                        
+                        Image(systemName: "map.fill")
+                            .font(.system(size: 40, weight: .light))
+                            .foregroundColor(.white.opacity(0.1))
+                        
+                        Text("DISCOVER NEARBY")
+                            .font(.system(size: 11, weight: .black, design: .rounded))
+                            .foregroundColor(.white.opacity(0.2))
+                            .tracking(2)
+                        
+                        Text("Tap a category above or search\nto find nearby places")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.3))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(4)
+                        
+                        // Map App Indicator
+                        HStack(spacing: 6) {
+                            Image(systemName: selectedMapApp == .appleMaps ? "map.fill" : "globe")
+                                .font(.system(size: 10))
+                            Text("Opens in \(selectedMapApp.rawValue)")
+                                .font(.system(size: 10, weight: .bold))
+                                .tracking(0.5)
+                        }
+                        .foregroundColor(.white.opacity(0.2))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Color.white.opacity(0.04)))
+                        
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    // Search Results List
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            // Results Count Header
+                            HStack {
+                                Text("\(nav.searchResults.count) PLACES FOUND")
+                                    .font(.system(size: 9, weight: .black))
+                                    .foregroundColor(.white.opacity(0.3))
+                                    .tracking(1.5)
+                                
+                                Spacer()
+                                
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.3)) {
+                                        searchQuery = ""
+                                        nav.searchResults = []
+                                    }
+                                }) {
+                                    Text("CLEAR")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(.white.opacity(0.4))
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                            .padding(.bottom, 10)
+                            
+                            // Place Rows
+                            ForEach(nav.searchResults, id: \.self) { item in
+                                Button(action: {
+                                    nav.openInExternalMaps(item: item)
+                                }) {
+                                    HStack(spacing: 14) {
+                                        // Category Icon
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .fill(Color(red: 0.2, green: 0.9, blue: 0.5).opacity(0.08))
+                                                .frame(width: 40, height: 40)
+                                            
+                                            Image(systemName: "location.fill")
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundColor(Color(red: 0.2, green: 0.9, blue: 0.5))
+                                        }
+                                        
+                                        // Place Details
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(item.name ?? "Unknown Location")
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
+                                            
+                                            Text(item.placemark.title ?? "")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.white.opacity(0.35))
+                                                .lineLimit(1)
+                                        }
+                                        
+                                        Spacer()
+                                        
+                                        // Distance Badge
+                                        VStack(alignment: .trailing, spacing: 4) {
+                                            if let dist = nav.formattedDistance(to: item) {
+                                                Text(dist)
+                                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                    .foregroundColor(Color(red: 0.2, green: 0.9, blue: 0.5))
+                                            }
+                                            
+                                            Image(systemName: "arrow.up.right.square")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(.white.opacity(0.25))
+                                        }
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.02)))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                                }
+                                .padding(.bottom, 6)
+                            }
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
             }
         }
-    }
-
-    // MARK: - UI Formatting Helpers
-    
-    private func getManeuverSFName(_ iconId: UInt8) -> String {
-        switch iconId {
-        case 53: return "arrow.turn.up.left"
-        case 44: return "arrow.turn.up.right"
-        case 54: return "arrow.turn.up.left"
-        case 45: return "arrow.turn.up.right"
-        case 55: return "arrow.up.left"
-        case 46: return "arrow.up.right"
-        case 47: return "arrow.uturn.left"
-        case 42: return "arrow.merge"
-        case 59: return "arrow.turn.up.left.fill"
-        case 50: return "arrow.turn.up.right.fill"
-        case 49: return "arrow.counterclockwise"
-        case 83: return "flag.fill"
-        default: return "arrow.up"
-        }
-    }
-
-    private func formatDistanceText(_ meters: CLLocationDistance) -> String {
-        if meters < 1000.0 {
-            return "\(Int(meters)) m"
-        } else {
-            return String(format: "%.1f km", meters / 1000.0)
-        }
-    }
-
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute]
-        formatter.unitsStyle = .abbreviated
-        return formatter.string(from: duration) ?? ""
     }
 
     // MARK: - Control Mode
@@ -1094,6 +1210,43 @@ struct DashboardView: View {
         case .scanning, .connecting: return Color.orange
         default:                     return Color.red
         }
+    }
+    
+
+
+    // MARK: - UI Formatting Helpers
+    
+    private func getManeuverSFName(_ iconId: UInt8) -> String {
+        switch iconId {
+        case 53: return "arrow.turn.up.left"
+        case 44: return "arrow.turn.up.right"
+        case 54: return "arrow.turn.up.left"
+        case 45: return "arrow.turn.up.right"
+        case 55: return "arrow.up.left"
+        case 46: return "arrow.up.right"
+        case 47: return "arrow.uturn.left"
+        case 42: return "arrow.merge"
+        case 59: return "arrow.turn.up.left.fill"
+        case 50: return "arrow.turn.up.right.fill"
+        case 49: return "arrow.counterclockwise"
+        case 83: return "flag.fill"
+        default: return "arrow.up"
+        }
+    }
+
+    private func formatDistanceText(_ meters: CLLocationDistance) -> String {
+        if meters < 1000.0 {
+            return "\(Int(meters)) m"
+        } else {
+            return String(format: "%.1f km", meters / 1000.0)
+        }
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: duration) ?? ""
     }
 }
 

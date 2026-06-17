@@ -613,6 +613,9 @@ final class BluetoothManager: ObservableObject {
         
         stopHeartbeat()
         
+        // Cache the saved UUID before we disconnect to decide if we scan or direct-connect
+        let cachedUUID = UserDefaults.standard.string(forKey: "LAST_CONNECTED_PERIPHERAL_UUID")
+        
         if let peripheral = connectedPeripheral {
             centralManager.cancelPeripheralConnection(peripheral)
         } else if let peripheral = targetPeripheral {
@@ -624,14 +627,19 @@ final class BluetoothManager: ObservableObject {
         txCharacteristic = nil
         resetHandshakeState()
         
-        // Clear the saved UUID to allow fresh pairing
-        UserDefaults.standard.removeObject(forKey: "LAST_CONNECTED_PERIPHERAL_UUID")
-        
         status = .disconnected
         
-        // Start scanning after a brief delay to allow clean cancellation
+        // Start reconnecting or scanning after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.startScanning()
+            guard let self = self else { return }
+            if let uuidStr = cachedUUID, let _ = UUID(uuidString: uuidStr) {
+                print("🔄 Direct reconnection initiated to saved UUID: \(uuidStr)")
+                if self.reconnectToLastKnownPeripheral() {
+                    return
+                }
+            }
+            print("🔄 No saved UUID or direct reconnection failed. Starting scan...")
+            self.startScanning()
         }
     }
 
@@ -758,7 +766,7 @@ final class BluetoothManager: ObservableObject {
             }
         }
         
-        guard !isNavigationActive else { return }
+        guard isCallStatus || !isNavigationActive else { return }
         guard connectedPeripheral != nil,
               txCharacteristic != nil else { return }
         // Verify we are handshaked/secured before allowing display updates
@@ -775,6 +783,12 @@ final class BluetoothManager: ObservableObject {
 
     // Sends dynamic LiveScreen projection packet formatted for navigation.
     func sendNavigationInfo(iconId: UInt8, distance: String, instruction: String) {
+        // If a call is active, don't overwrite the call status on the display
+        if CallManager.shared.isIncomingCallActive || CallManager.shared.isCallActive {
+            print("📞 Call is active. Deferring navigation display update.")
+            return
+        }
+        
         guard connectedPeripheral != nil,
               txCharacteristic != nil else { return }
         // Verify we are handshaked/secured before allowing display updates

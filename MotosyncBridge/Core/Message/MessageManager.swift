@@ -61,6 +61,15 @@ final class MessageManager: NSObject, ObservableObject {
         }
     }
     
+    func simulateNewMessage(sender: String = "Alice", app: String = "WhatsApp") {
+        DispatchQueue.main.async {
+            self.lastMessageSender = sender
+            self.lastMessageApp = app
+            self.hasUnreadPriorityMessages = true
+            self.startAutoDismissTimer()
+        }
+    }
+    
     // Auto-dismiss indicator after 20 seconds
     private func startAutoDismissTimer() {
         dismissTimer?.invalidate()
