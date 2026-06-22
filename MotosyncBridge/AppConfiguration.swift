@@ -58,4 +58,32 @@ enum AppConfiguration {
             UserDefaults.standard.set(newValue.rawValue, forKey: "preferredMapApp")
         }
     }
+    
+    // Ride Intelligence Settings
+    enum PhonePlacement: String, CaseIterable {
+        case handlebar = "Handlebar Mount"
+        case pocket = "Rider Pocket"
+    }
+    
+    static var isRideLoggingEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "isRideLoggingEnabled")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "isRideLoggingEnabled")
+        }
+    }
+    
+    static var phonePlacement: PhonePlacement {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: "phonePlacement"),
+                  let pref = PhonePlacement(rawValue: raw) else {
+                return .handlebar
+            }
+            return pref
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "phonePlacement")
+        }
+    }
 }

@@ -20,6 +20,8 @@
 	<string>com.priyajit.MotosyncBridge</string>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Needed to read track names.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>MotosyncBridge uses motion sensors to analyze road quality and log potholes during your ride.</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>comgooglemaps</string>

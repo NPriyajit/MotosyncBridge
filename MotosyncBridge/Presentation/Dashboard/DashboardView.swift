@@ -2,6 +2,7 @@ import SwiftUI
 import MapKit
 import CoreBluetooth
 import CoreLocation
+import SwiftData
 
 // MARK: - Radar Ring (Glowing pulse animation)
 struct RadarRing: View {
@@ -72,6 +73,10 @@ struct DashboardView: View {
     @StateObject private var nav = NavigationManager.shared
     @StateObject private var call = CallManager.shared
     @StateObject private var msg = MessageManager.shared
+
+    @Query(sort: \RideSession.startTime, order: .reverse) private var sessions: [RideSession]
+    @State private var isRideLoggingEnabled: Bool = AppConfiguration.isRideLoggingEnabled
+    @State private var phonePlacement: AppConfiguration.PhonePlacement = AppConfiguration.phonePlacement
 
     @FocusState private var isFocused: Bool
 
@@ -208,6 +213,12 @@ struct DashboardView: View {
                     hasPassedInitialThreeSeconds = true
                 }
             }
+        }
+        .onChange(of: isRideLoggingEnabled) {
+            AppConfiguration.isRideLoggingEnabled = isRideLoggingEnabled
+        }
+        .onChange(of: phonePlacement) {
+            AppConfiguration.phonePlacement = phonePlacement
         }
     }
 
@@ -448,6 +459,88 @@ struct DashboardView: View {
                     .padding(14)
                     .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.03)))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
+                
+                // Ride Intelligence
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("RIDE INTELLIGENCE")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(.white.opacity(0.3))
+                        .tracking(1.5)
+                    
+                    VStack(spacing: 0) {
+                        Toggle(isOn: $isRideLoggingEnabled.animation(.spring(response: 0.35, dampingFraction: 0.8))) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Opt-in Ride Telemetry")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white)
+                                Text("Log potholes and calculate ride smoothness")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.4))
+                            }
+                        }
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 14)
+                        
+                        if isRideLoggingEnabled {
+                            Divider().background(Color.white.opacity(0.08))
+                            
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("PHONE PLACEMENT")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.4))
+                                
+                                Picker("Phone Placement", selection: $phonePlacement) {
+                                    ForEach(AppConfiguration.PhonePlacement.allCases, id: \.self) { placement in
+                                        Text(placement.rawValue).tag(placement)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 14)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.03)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
+                
+                // Ride History
+                if isRideLoggingEnabled {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("RIDE HISTORY")
+                            .font(.system(size: 9, weight: .black))
+                            .foregroundColor(.white.opacity(0.3))
+                            .tracking(1.5)
+                        
+                        if sessions.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: "bicycle")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.white.opacity(0.15))
+                                Text("No rides logged yet")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.4))
+                                Text("Connect to your Honda BTU to start tracking automatically.")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.3))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 16)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 24)
+                            .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.02)))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                        } else {
+                            VStack(spacing: 10) {
+                                ForEach(sessions.prefix(5)) { session in
+                                    RideHistoryRow(session: session)
+                                }
+                            }
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
                 
                 // Priority Notification Apps
@@ -1247,6 +1340,142 @@ struct DashboardView: View {
         formatter.allowedUnits = [.hour, .minute]
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: duration) ?? ""
+    }
+}
+
+// MARK: - Ride History Row View
+struct RideHistoryRow: View {
+    let session: RideSession
+    
+    @State private var showShareSheet = false
+    @State private var shareURL: URL?
+    @State private var shareType: ShareType = .gpx
+    
+    enum ShareType {
+        case gpx, json
+    }
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Smoothness Score Badge
+            VStack {
+                Text("\(session.smoothnessScore)")
+                    .font(.system(size: 15, weight: .black, design: .rounded))
+                    .foregroundColor(scoreColor(session.smoothnessScore))
+                Text("SCORE")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+            .frame(width: 44, height: 44)
+            .background(scoreColor(session.smoothnessScore).opacity(0.1))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(scoreColor(session.smoothnessScore).opacity(0.2), lineWidth: 1))
+            
+            // Details
+            VStack(alignment: .leading, spacing: 4) {
+                Text(formatDate(session.startTime))
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                
+                HStack(spacing: 6) {
+                    Text(formatDuration(session.startTime, session.endTime))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                    
+                    Circle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: 3, height: 3)
+                    
+                    Text("\(session.anomalies.count) impacts")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(session.anomalies.isEmpty ? .white.opacity(0.4) : .orange)
+                    
+                    Circle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: 3, height: 3)
+                    
+                    Text(session.phonePlacement == "Handlebar Mount" ? "Rigid" : "Pocket")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+            }
+            
+            Spacer()
+            
+            // Share Buttons
+            HStack(spacing: 8) {
+                Button(action: {
+                    if let url = TelemetryExporter.generateGPX(for: session) {
+                        shareURL = url
+                        shareType = .gpx
+                        showShareSheet = true
+                    }
+                }) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "map")
+                            .font(.system(size: 12))
+                        Text("GPX")
+                            .font(.system(size: 8, weight: .black))
+                    }
+                    .foregroundColor(.white.opacity(0.6))
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.04))
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
+                
+                Button(action: {
+                    if let url = TelemetryExporter.generateJSON(for: session) {
+                        shareURL = url
+                        shareType = .json
+                        showShareSheet = true
+                    }
+                }) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "doc.plaintext")
+                            .font(.system(size: 12))
+                        Text("JSON")
+                            .font(.system(size: 8, weight: .black))
+                    }
+                    .foregroundColor(.white.opacity(0.6))
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.04))
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.02)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.04), lineWidth: 1))
+        .sheet(isPresented: $showShareSheet) {
+            if let url = shareURL {
+                ShareActivityView(activityItems: [url])
+            }
+        }
+    }
+    
+    private func scoreColor(_ score: Int) -> Color {
+        if score >= 80 { return Color(red: 0.2, green: 0.9, blue: 0.5) }
+        if score >= 50 { return Color.orange }
+        return Color.red
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+    
+    private func formatDuration(_ start: Date, _ end: Date?) -> String {
+        guard let end = end else { return "Active" }
+        let diff = end.timeIntervalSince(start)
+        let mins = Int(diff / 60)
+        if mins == 0 {
+            return "\(Int(diff))s"
+        }
+        return "\(mins)m"
     }
 }
 
